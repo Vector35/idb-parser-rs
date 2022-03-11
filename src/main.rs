@@ -102,29 +102,6 @@ struct BranchEntryPointer {
 
 #[derive(Deserialize, Default, Derivative)]
 #[derivative(Debug)]
-struct BranchKeyEntry {
-    key_length: u16,
-    #[serde(skip)]
-    key: Vec<u8>,
-}
-
-#[derive(Deserialize, Default, Derivative)]
-#[derivative(Debug)]
-struct BranchValueEntry {
-    value_length: u16,
-    #[serde(skip)]
-    value: Vec<u8>,
-}
-
-#[derive(Deserialize, Default, Derivative)]
-#[derivative(Debug)]
-struct BranchEntry {
-    key: BranchKeyEntry,
-    value: BranchValueEntry,
-}
-
-#[derive(Deserialize, Default, Derivative)]
-#[derivative(Debug)]
 struct LeafEntryPointer {
     common_prefix: u16,
     _pad: u16,
@@ -133,24 +110,11 @@ struct LeafEntryPointer {
 
 #[derive(Deserialize, Default, Derivative)]
 #[derivative(Debug)]
-struct LeafKeyEntry {
-    key_length: u16,
-    #[serde(skip)]
+struct KeyValueEntry {
     key: Vec<u8>,
-}
-
-#[derive(Deserialize, Default, Derivative)]
-#[derivative(Debug)]
-struct LeafValueEntry {
-    value_length: u16,
-    #[serde(skip)]
     value: Vec<u8>,
-}
-
-#[derive(Default, Debug)]
-struct LeafEntry {
-    key: LeafKeyEntry,
-    value: LeafValueEntry,
+    is_leaf: bool,
+    pkey: Vec<u8>,
 }
 
 #[derive(Deserialize, Default, Derivative)]
@@ -168,37 +132,64 @@ impl Page {
         self.pointer == 0
     }
 
-    pub fn get_entries(&self) -> Vec<(BranchEntry, LeafEntry)> {
+    pub fn get_entries(&self) -> Vec<KeyValueEntry> {
+        let mut leaf_key = Vec::<u8>::new();
         for index in 0..self.entry_count {
             if self.is_leaf() {
                 let leaf_ptr: LeafEntryPointer =
-                    bincode::deserialize(&self.contents[(index * 6) as usize..]).unwrap();
-                let left_key_entry: LeafKeyEntry =
-                    bincode::deserialize(&self.contents[(leaf_ptr.offset - 6) as usize..]).unwrap();
+                    bincode::deserialize(&self.contents[6 + (index * 6) as usize..]).unwrap();
+                let key_length: u16 =
+                    bincode::deserialize(&self.contents[leaf_ptr.offset as usize..]).unwrap();
+                let value_length: u16 = bincode::deserialize(
+                    &self.contents[(leaf_ptr.offset + 2 + key_length) as usize..],
+                )
+                .unwrap();
+
+                let total_offset = (leaf_ptr.offset + 4 + key_length) as usize;
+                let pkey = self.contents
+                    [(leaf_ptr.offset + 2) as usize..(leaf_ptr.offset + 2 + key_length) as usize]
+                    .to_vec();
+                println!("comprefix:{}", leaf_ptr.common_prefix);
+                println!("keylen   :{}", key_length);
+                println!("vallen   :{}", value_length);
+                let common_prefix = if leaf_ptr.common_prefix >= key_length {
+                    key_length
+                } else {
+                    leaf_ptr.common_prefix
+                };
+                let key = [pkey[..common_prefix as usize].to_vec(), pkey.clone()].concat();
+                let leaf_entry = KeyValueEntry {
+                    key,
+                    pkey,
+                    value: self.contents[total_offset..total_offset + value_length as usize]
+                        .to_vec(),
+                    is_leaf: true,
+                };
+                leaf_key = leaf_entry.key.clone();
+                println!("{:?}", leaf_entry);
             } else {
                 let branch_ptr: BranchEntryPointer =
                     bincode::deserialize(&self.contents[6 + (index * 6) as usize..]).unwrap();
-                let mut branch_key_entry: BranchKeyEntry =
+
+                let key_length: u16 =
                     bincode::deserialize(&self.contents[branch_ptr.offset as usize..]).unwrap();
-                branch_key_entry.key = self.contents[(branch_ptr.offset + 2) as usize
-                    ..(branch_ptr.offset + 2) as usize + branch_key_entry.key_length as usize]
-                    .to_vec();
-                let mut branch_value_entry: BranchValueEntry = bincode::deserialize(
-                    &self.contents
-                        [(branch_ptr.offset + 2 + branch_key_entry.key_length) as usize..],
+                let value_length: u16 = bincode::deserialize(
+                    &self.contents[(branch_ptr.offset + 2 + key_length) as usize..],
                 )
                 .unwrap();
-                branch_value_entry.value =
-                    self.contents[(branch_ptr.offset + 4 + branch_key_entry.key_length) as usize
-                        ..(branch_ptr.offset
-                            + branch_key_entry.key_length
-                            + 4
-                            + branch_value_entry.value_length) as usize]
-                        .to_vec();
 
-                println!("{:?}", branch_ptr);
-                println!("{:?}", branch_key_entry);
-                println!("{:?}", branch_value_entry);
+                let total_offset = (branch_ptr.offset + 4 + key_length) as usize;
+                let branch_entry = KeyValueEntry {
+                    key: self.contents[(branch_ptr.offset + 2) as usize
+                        ..(branch_ptr.offset + 2 + key_length) as usize]
+                        .to_vec(),
+                    value: self.contents[total_offset..total_offset + value_length as usize]
+                        .to_vec(),
+                    is_leaf: false,
+                    ..Default::default()
+                };
+
+                println!("{:?}", branch_entry);
             }
         }
         Default::default()
@@ -432,6 +423,6 @@ fn main() {
     println!("time to parse: {} ns", now.elapsed().as_nanos());
 
     println!("{:#?}", idb);
-    println!("{:#?}", idb.id0.as_ref().unwrap().get_page(1));
-    println!("{:#?}", idb.id0.as_ref().unwrap().get_page(1).get_entries());
+    // println!("{:#?}", idb.id0.as_ref().unwrap().get_page(2));
+    println!("{:#?}", idb.id0.as_ref().unwrap().get_page(2).get_entries());
 }
