@@ -1,7 +1,8 @@
-use bincode::Options;
+use bincode::{deserialize, Options};
 use derivative::Derivative;
 use serde::Deserialize;
 use std::default::Default;
+use std::fmt;
 
 #[derive(Default, Deserialize, Debug)]
 struct IDBHeaderSerialize {
@@ -116,93 +117,90 @@ struct KeyValueEntry {
     is_leaf: bool,
 }
 
-#[derive(Deserialize, Default, Derivative)]
+#[derive(Default, Derivative)]
 #[derivative(Debug)]
 struct Page {
     pointer: u32,
     entry_count: u16,
-    #[serde(skip)]
-    has_cached_entries: bool,
-    #[serde(skip)]
-    kv_entries: Vec<KeyValueEntry>,
-    #[derivative(Debug = "ignore")]
-    #[serde(skip)]
-    contents: Vec<u8>,
+    pub kv_entries: Vec<KeyValueEntry>,
 }
 
 impl Page {
-    pub fn is_leaf(&self) -> bool {
-        self.pointer == 0
+    pub fn new(data: &[u8]) -> Self {
+        let pointer = deserialize(&data).unwrap();
+        let entry_count = deserialize(&data[4..]).unwrap();
+        let kv_entries = Page::parse_entries(entry_count, pointer == 0, data);
+        Self {
+            pointer,
+            entry_count,
+            kv_entries,
+        }
     }
 
-    fn cache_entries(&mut self) {
+    fn parse_entries(entry_count: u16, is_leaf: bool, contents: &[u8]) -> Vec<KeyValueEntry> {
         let mut leaf_key = Vec::<u8>::new();
-        for index in 0..self.entry_count {
-            if self.is_leaf() {
-                let leaf_ptr: LeafEntryPointer =
-                    bincode::deserialize(&self.contents[6 + (index * 6) as usize..]).unwrap();
-                let key_length: u16 =
-                    bincode::deserialize(&self.contents[leaf_ptr.offset as usize..]).unwrap();
-                let value_length: u16 = bincode::deserialize(
-                    &self.contents[(leaf_ptr.offset + 2 + key_length) as usize..],
-                )
-                .unwrap();
+        (0..entry_count)
+            .into_iter()
+            .map(|index| {
+                if is_leaf {
+                    let leaf_ptr: LeafEntryPointer =
+                        bincode::deserialize(&contents[6 + (index * 6) as usize..]).unwrap();
+                    let key_length: u16 =
+                        bincode::deserialize(&contents[leaf_ptr.offset as usize..]).unwrap();
+                    let value_length: u16 = bincode::deserialize(
+                        &contents[(leaf_ptr.offset + 2 + key_length) as usize..],
+                    )
+                    .unwrap();
 
-                let value_offset = (leaf_ptr.offset + 4 + key_length) as usize;
-                let value =
-                    self.contents[value_offset..value_offset + value_length as usize].to_vec();
+                    let value_offset = (leaf_ptr.offset + 4 + key_length) as usize;
+                    let value =
+                        contents[value_offset..value_offset + value_length as usize].to_vec();
 
-                let key_offset = (leaf_ptr.offset + 2) as usize;
-                let key_no_prefix =
-                    self.contents[key_offset..key_offset + key_length as usize].to_vec();
-                let key = if leaf_ptr.common_prefix == 0 {
-                    [leaf_key.clone(), key_no_prefix].concat()
+                    let key_offset = (leaf_ptr.offset + 2) as usize;
+                    let key_no_prefix =
+                        contents[key_offset..key_offset + key_length as usize].to_vec();
+                    let key = if leaf_ptr.common_prefix == 0 {
+                        [leaf_key.clone(), key_no_prefix].concat()
+                    } else {
+                        [
+                            leaf_key[..leaf_ptr.common_prefix as usize].to_vec(),
+                            key_no_prefix,
+                        ]
+                        .concat()
+                    };
+                    leaf_key = key.clone();
+
+                    KeyValueEntry {
+                        key,
+                        value,
+                        is_leaf: true,
+                    }
                 } else {
-                    [
-                        leaf_key[..leaf_ptr.common_prefix as usize].to_vec(),
-                        key_no_prefix,
-                    ]
-                    .concat()
-                };
+                    let branch_ptr: BranchEntryPointer =
+                        bincode::deserialize(&contents[6 + (index * 6) as usize..]).unwrap();
 
-                self.kv_entries.push(KeyValueEntry {
-                    key,
-                    value,
-                    is_leaf: true,
-                });
-            } else {
-                let branch_ptr: BranchEntryPointer =
-                    bincode::deserialize(&self.contents[6 + (index * 6) as usize..]).unwrap();
+                    let key_length: u16 =
+                        bincode::deserialize(&contents[branch_ptr.offset as usize..]).unwrap();
+                    let value_length: u16 = bincode::deserialize(
+                        &contents[(branch_ptr.offset + 2 + key_length) as usize..],
+                    )
+                    .unwrap();
 
-                let key_length: u16 =
-                    bincode::deserialize(&self.contents[branch_ptr.offset as usize..]).unwrap();
-                let value_length: u16 = bincode::deserialize(
-                    &self.contents[(branch_ptr.offset + 2 + key_length) as usize..],
-                )
-                .unwrap();
+                    let value_offset = (branch_ptr.offset + 4 + key_length) as usize;
+                    let value =
+                        contents[value_offset..value_offset + value_length as usize].to_vec();
+                    let key_offset = (branch_ptr.offset + 2) as usize;
+                    let key = contents[key_offset..key_offset + key_length as usize].to_vec();
+                    leaf_key = key.clone();
 
-                let value_offset = (branch_ptr.offset + 4 + key_length) as usize;
-                let value =
-                    self.contents[value_offset..value_offset + value_length as usize].to_vec();
-                let key_offset = (branch_ptr.offset + 2) as usize;
-                let key = self.contents[key_offset..key_offset + key_length as usize].to_vec();
-                self.kv_entries.push(KeyValueEntry {
-                    key,
-                    value,
-                    is_leaf: false,
-                });
-            }
-            leaf_key = self.kv_entries.last().unwrap().key.clone();
-        }
-    }
-
-    pub fn get_entries(&mut self) -> Vec<KeyValueEntry> {
-        if !self.has_cached_entries {
-            self.cache_entries();
-            self.has_cached_entries = true;
-        }
-
-        self.kv_entries.clone()
+                    KeyValueEntry {
+                        key,
+                        value,
+                        is_leaf: false,
+                    }
+                }
+            })
+            .collect()
     }
 }
 
@@ -237,9 +235,7 @@ impl ID0Section {
     pub fn get_page(&self, page_number: u16) -> Page {
         let offset = self.page_size as usize * page_number as usize;
         let page_buf = &self.section_buffer[offset..(offset + self.page_size as usize)];
-        let mut res: Page = bincode::deserialize(page_buf).unwrap();
-        res.contents = page_buf.to_vec();
-        res
+        Page::new(page_buf)
     }
 }
 
@@ -433,13 +429,13 @@ fn main() {
     println!("time to parse: {} ns", now.elapsed().as_nanos());
 
     println!("{:#?}", idb);
-    println!("{:?}", idb.id0.as_ref().unwrap().get_page(1).get_entries());
-    println!("{:?}", idb.id0.as_ref().unwrap().get_page(2).get_entries());
-    println!("{:?}", idb.id0.as_ref().unwrap().get_page(3).get_entries());
-    println!("{:?}", idb.id0.as_ref().unwrap().get_page(4).get_entries());
-    println!("{:?}", idb.id0.as_ref().unwrap().get_page(5).get_entries());
-    println!("{:?}", idb.id0.as_ref().unwrap().get_page(6).get_entries());
-    println!("{:?}", idb.id0.as_ref().unwrap().get_page(7).get_entries());
-    println!("{:?}", idb.id0.as_ref().unwrap().get_page(8).get_entries());
-    println!("{:?}", idb.id0.as_ref().unwrap().get_page(9).get_entries());
+    println!("{:?}", idb.id0.as_ref().unwrap().get_page(1).kv_entries);
+    println!("{:?}", idb.id0.as_ref().unwrap().get_page(2).kv_entries);
+    println!("{:?}", idb.id0.as_ref().unwrap().get_page(3).kv_entries);
+    println!("{:?}", idb.id0.as_ref().unwrap().get_page(4).kv_entries);
+    println!("{:?}", idb.id0.as_ref().unwrap().get_page(5).kv_entries);
+    println!("{:?}", idb.id0.as_ref().unwrap().get_page(6).kv_entries);
+    println!("{:?}", idb.id0.as_ref().unwrap().get_page(7).kv_entries);
+    println!("{:?}", idb.id0.as_ref().unwrap().get_page(8).kv_entries);
+    println!("{:?}", idb.id0.as_ref().unwrap().get_page(9).kv_entries);
 }
