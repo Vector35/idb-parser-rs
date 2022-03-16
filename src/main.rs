@@ -1,7 +1,9 @@
 use bincode::{deserialize, Options};
 use derivative::Derivative;
-use serde::Deserialize;
+use serde::de::{SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer};
 use std::default::Default;
+use std::ffi::{CString, OsString};
 use std::fmt;
 
 #[derive(Default, Deserialize, Debug)]
@@ -269,6 +271,12 @@ struct SEGSection {
     header: IDBSectionHeader,
 }
 
+#[derive(Default, Debug)]
+struct StringWithLength {
+    len: u8,
+    data: String,
+}
+
 #[derive(Deserialize, Default, Derivative)]
 #[derivative(Debug)]
 struct TILSection {
@@ -277,6 +285,53 @@ struct TILSection {
     section_buffer: Vec<u8>,
 
     header: IDBSectionHeader,
+    signature: [u8; 6],
+    format: u32,
+    flags: u32,
+    #[serde(deserialize_with = "parse_cstr")]
+    title: StringWithLength,
+    #[serde(deserialize_with = "parse_cstr")]
+    base: StringWithLength,
+    id: u8,
+    cm: u8,
+    size_i: u8,
+    size_b: u8,
+    size_e: u8,
+    def_align: u8,
+}
+
+struct StringVisitor;
+impl<'de> Visitor<'de> for StringVisitor {
+    type Value = StringWithLength;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("???")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let len: u8 = seq.next_element().unwrap().unwrap();
+        Ok(StringWithLength {
+            len,
+            data: String::from_utf8_lossy(
+                (0..len)
+                    .map(|_| {
+                        let elem: u8 = seq.next_element().unwrap().unwrap();
+                        elem
+                    })
+                    .collect::<Vec<u8>>()
+                    .as_slice(),
+            )
+            .to_string(),
+        })
+    }
+}
+
+fn parse_cstr<'de, D: Deserializer<'de>>(d: D) -> Result<StringWithLength, D::Error> {
+    // TODO: this len of 200 is completely arbitrary... fix l8r
+    d.deserialize_tuple(200, StringVisitor)
 }
 
 #[derive(Deserialize, Default, Derivative)]
@@ -361,7 +416,7 @@ impl From<IDBSection> for Option<TILSection> {
         if section.header.length == 0 {
             None
         } else {
-            Some(TILSection::default())
+            Some(bincode::deserialize(section.section_buffer.as_slice()).unwrap())
         }
     }
 }
