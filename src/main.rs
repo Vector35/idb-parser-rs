@@ -305,7 +305,7 @@ impl<'de> Visitor<'de> for StringVisitor {
     type Value = StringWithLength;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("???")
+        formatter.write_str("Expected valid string w/ length sequence.")
     }
 
     fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
@@ -330,8 +330,10 @@ impl<'de> Visitor<'de> for StringVisitor {
 }
 
 fn parse_cstr<'de, D: Deserializer<'de>>(d: D) -> Result<StringWithLength, D::Error> {
-    // TODO: this len of 200 is completely arbitrary... fix l8r
-    d.deserialize_tuple(200, StringVisitor)
+    // TODO: Fix this, i'm currently using `usize::MAX` instead of an actual length
+    // TODO: because the other deserialize methods try deserializing the first element
+    // TODO: to find a length.
+    d.deserialize_tuple(usize::MAX, StringVisitor)
 }
 
 #[derive(Deserialize, Default, Derivative)]
