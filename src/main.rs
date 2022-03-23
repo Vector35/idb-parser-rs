@@ -1,5 +1,6 @@
 use bincode::{deserialize, Options};
 use derivative::Derivative;
+use enumflags2::{bitflags, make_bitflags, BitFlags};
 use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::default::Default;
@@ -277,6 +278,38 @@ struct StringWithLength {
     data: String,
 }
 
+#[bitflags]
+#[repr(u32)]
+#[derive(Deserialize, Debug, Copy, Clone, PartialEq)]
+enum TILFlags {
+    Zip = 0x0001,
+    Mac = 0x0002,
+    Esi = 0x0004,
+    Uni = 0x0008,
+    Ord = 0x0010,
+    Ali = 0x0020,
+    Mod = 0x0040,
+    Stm = 0x0080,
+    Sld = 0x0100,
+}
+
+#[derive(Deserialize, Default, Debug)]
+struct TILBucket {}
+#[derive(Deserialize, Default, Debug)]
+struct TILBucketZip {}
+
+#[derive(Deserialize, Default, Debug)]
+struct TILOptional {
+    size_s: u8,
+    size_l: u8,
+    size_ll: u8,
+    size_ldbl: u8,
+    syms: TILBucket,
+    type_ordinal_numbers: u32,
+    types: TILBucket,
+    macros: TILBucket,
+}
+
 #[derive(Deserialize, Default, Derivative)]
 #[derivative(Debug)]
 struct TILSection {
@@ -287,7 +320,7 @@ struct TILSection {
     header: IDBSectionHeader,
     signature: [u8; 6],
     format: u32,
-    flags: u32,
+    flags: BitFlags<TILFlags>,
     #[serde(deserialize_with = "parse_cstr")]
     title: StringWithLength,
     #[serde(deserialize_with = "parse_cstr")]
@@ -298,6 +331,8 @@ struct TILSection {
     size_b: u8,
     size_e: u8,
     def_align: u8,
+    #[serde(skip)]
+    optional: TILOptional,
 }
 
 struct StringVisitor;
@@ -418,7 +453,26 @@ impl From<IDBSection> for Option<TILSection> {
         if section.header.length == 0 {
             None
         } else {
-            Some(bincode::deserialize(section.section_buffer.as_slice()).unwrap())
+            let mut til_section: TILSection =
+                bincode::deserialize(section.section_buffer.as_slice()).unwrap();
+
+            let mut cur_offset = std::mem::size_of_val(&til_section);
+            if til_section.flags.intersects(TILFlags::Esi) {
+                let esi_test: (u8, u8, u8) =
+                    bincode::deserialize(&section.section_buffer[cur_offset..]).unwrap();
+                println!("{},{},{}", esi_test.0, esi_test.1, esi_test.2);
+                cur_offset += std::mem::size_of_val(&esi_test);
+            }
+
+            if til_section.flags.intersects(TILFlags::Sld) {
+                println!("SLD");
+            }
+
+            if til_section.flags.intersects(TILFlags::Ord) {
+                println!("ORD");
+            }
+
+            Some(til_section)
         }
     }
 }
