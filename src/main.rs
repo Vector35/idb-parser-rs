@@ -3,6 +3,7 @@ use derivative::Derivative;
 use enumflags2::{bitflags, make_bitflags, BitFlags};
 use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
+use std::borrow::Borrow;
 use std::default::Default;
 use std::ffi::{CString, OsString};
 use std::fmt;
@@ -294,9 +295,75 @@ enum TILFlags {
 }
 
 #[derive(Deserialize, Default, Debug)]
-struct TILBucket {}
+struct TILBucket {
+    ndefs: u32,
+    #[serde(deserialize_with = "parse_vec_len")]
+    data: VectorWithLength,
+}
 #[derive(Deserialize, Default, Debug)]
-struct TILBucketZip {}
+struct TILBucketZip {
+    ndefs: u32,
+    size: u32,
+    #[serde(deserialize_with = "parse_vec_len")]
+    data: VectorWithLength,
+}
+
+#[derive(Deserialize, Debug)]
+enum TILBucketType {
+    None,
+    Default(TILBucket),
+    Zip(TILBucketZip),
+}
+
+impl Default for TILBucketType {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+#[derive(Deserialize, Default, Debug)]
+struct VectorWithLength {
+    len: u32,
+    data: Vec<u8>,
+}
+
+struct VectorWithLengthVisitor;
+impl<'de> Visitor<'de> for VectorWithLengthVisitor {
+    type Value = VectorWithLength;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("Expected valid vector w/ length sequence.")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let len: u32 = seq.next_element().unwrap().unwrap();
+        println!("lolol:{}", len);
+        Ok(VectorWithLength {
+            len,
+            data: (0..len)
+                .map(|x| {
+                    println!("{}", x);
+                    let elem: u8 = seq
+                        .next_element()
+                        .expect("elem bad")
+                        .expect("elem very bad.");
+                    println!("{}:elem:0x{:x}", x, elem);
+                    elem
+                })
+                .collect::<Vec<u8>>(),
+        })
+    }
+}
+
+fn parse_vec_len<'de, D: Deserializer<'de>>(d: D) -> Result<VectorWithLength, D::Error> {
+    // TODO: Fix this, i'm currently using `usize::MAX` instead of an actual length
+    // TODO: because the other deserialize methods try deserializing the first element
+    // TODO: to find a length.
+    d.deserialize_tuple(usize::MAX, VectorWithLengthVisitor)
+}
 
 #[derive(Deserialize, Default, Debug)]
 struct TILOptional {
@@ -304,10 +371,10 @@ struct TILOptional {
     size_l: u8,
     size_ll: u8,
     size_ldbl: u8,
-    syms: TILBucket,
+    syms: TILBucketType,
     type_ordinal_numbers: u32,
-    types: TILBucket,
-    macros: TILBucket,
+    types: TILBucketType,
+    macros: TILBucketType,
 }
 
 #[derive(Deserialize, Default, Derivative)]
@@ -455,8 +522,9 @@ impl From<IDBSection> for Option<TILSection> {
         } else {
             let mut til_section: TILSection =
                 bincode::deserialize(section.section_buffer.as_slice()).unwrap();
-
-            let mut cur_offset = std::mem::size_of_val(&til_section);
+            println!("szszsz:::{}", til_section.header.length);
+            let mut cur_offset = 0x48 + 9;
+            println!("cur_offset:{:#x}", cur_offset);
             if til_section.flags.intersects(TILFlags::Esi) {
                 let esi_test: (u8, u8, u8) =
                     bincode::deserialize(&section.section_buffer[cur_offset..]).unwrap();
@@ -466,11 +534,86 @@ impl From<IDBSection> for Option<TILSection> {
 
             if til_section.flags.intersects(TILFlags::Sld) {
                 println!("SLD");
+                let sld_test: u8 =
+                    bincode::deserialize(&section.section_buffer[cur_offset..]).unwrap();
+                println!("{}", sld_test);
+                cur_offset += std::mem::size_of_val(&sld_test);
             }
+
+            let syms = if til_section.flags.intersects(TILFlags::Zip) {
+                TILBucketType::Zip(
+                    bincode::deserialize::<TILBucketZip>(&section.section_buffer[cur_offset..])
+                        .unwrap(),
+                )
+            } else {
+                println!("cur_offset:{:#x}", cur_offset);
+                TILBucketType::Default(
+                    bincode::deserialize::<TILBucket>(&section.section_buffer[cur_offset..])
+                        .unwrap(),
+                )
+            };
+            println!("syms:0x{:x}", std::mem::size_of_val(&syms));
+            let sizetest = std::mem::size_of::<u32>()
+                + std::mem::size_of::<u32>()
+                + match syms.borrow() {
+                    TILBucketType::Zip(zip) => zip.data.len as usize,
+                    TILBucketType::Default(default) => default.data.len as usize,
+                    _ => 0usize,
+                };
+            println!("syms:0x{:x}", sizetest);
+            cur_offset += sizetest;
+
+            println!("{:?}", syms);
 
             if til_section.flags.intersects(TILFlags::Ord) {
                 println!("ORD");
+                let ord_test: u32 =
+                    bincode::deserialize(&section.section_buffer[cur_offset..]).unwrap();
+                println!("{:x}", ord_test);
+                cur_offset += std::mem::size_of_val(&ord_test);
             }
+
+            let types = if til_section.flags.intersects(TILFlags::Zip) {
+                println!("types_zip:cur_offset:{:#x}", cur_offset);
+                TILBucketType::Zip(
+                    bincode::deserialize::<TILBucketZip>(&section.section_buffer[cur_offset..])
+                        .unwrap(),
+                )
+            } else {
+                println!("types:cur_offset:{:#x}", cur_offset);
+                let ndef: u32 =
+                    bincode::deserialize(&section.section_buffer[cur_offset..]).unwrap();
+                let len: u32 = bincode::deserialize(
+                    &section.section_buffer[cur_offset + std::mem::size_of_val(&ndef)..],
+                )
+                .unwrap();
+                println!("{}::{}", ndef, len);
+                // println!(
+                //     "{:#x?}",
+                //     &section.section_buffer[cur_offset + 8 + 2200..cur_offset + 2206]
+                // );
+                // TODO: yeah. fix off by +one on deserialization of tilbucket visitor....
+                TILBucketType::Default(
+                    bincode::deserialize::<TILBucket>(&section.section_buffer[cur_offset..])
+                        .unwrap(),
+                )
+            };
+            println!("{:?}", types);
+            cur_offset += std::mem::size_of_val(&types);
+
+            let macros = if til_section.flags.intersects(TILFlags::Zip) {
+                TILBucketType::Zip(
+                    bincode::deserialize::<TILBucketZip>(&section.section_buffer[cur_offset..])
+                        .unwrap(),
+                )
+            } else {
+                println!("cur_offset:{:#x}", cur_offset);
+                TILBucketType::Default(
+                    bincode::deserialize::<TILBucket>(&section.section_buffer[cur_offset..])
+                        .unwrap(),
+                )
+            };
+            println!("{:?}", macros);
 
             Some(til_section)
         }
