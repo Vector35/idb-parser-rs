@@ -1,3 +1,4 @@
+use crate::TILBucketType::Default;
 use bincode::{deserialize, Options};
 use derivative::Derivative;
 use enumflags2::{bitflags, make_bitflags, BitFlags};
@@ -5,7 +6,6 @@ use memoffset::{offset_of, span_of};
 use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::borrow::Borrow;
-use std::default::Default;
 use std::ffi::{CString, OsString};
 use std::fmt;
 
@@ -296,17 +296,39 @@ enum TILFlags {
 }
 
 #[derive(Deserialize, Default, Debug)]
+struct TILTypeInfo {
+    flags: u32,
+    #[serde(deserialize_with = "parse_null_terminated_string")]
+    name: String,
+    ordinal: u64,
+    #[serde(deserialize_with = "parse_null_terminated")]
+    type_info: Vec<u8>,
+    #[serde(deserialize_with = "parse_null_terminated_string")]
+    cmt: String,
+    #[serde(deserialize_with = "parse_null_terminated")]
+    fields_buf: Vec<u8>,
+    #[serde(deserialize_with = "parse_null_terminated")]
+    fieldcmts: Vec<u8>,
+    sclass: u8,
+}
+
+#[derive(Deserialize, Default, Debug)]
 struct TILBucket {
     ndefs: u32,
     #[serde(deserialize_with = "parse_vec_len")]
     data: VectorWithLength,
+    #[serde(skip)]
+    type_info: Vec<TILTypeInfo>,
 }
+
 #[derive(Deserialize, Default, Debug)]
 struct TILBucketZip {
     ndefs: u32,
     size: u32,
     #[serde(deserialize_with = "parse_vec_len")]
     data: VectorWithLength,
+    #[serde(skip)]
+    type_info: Vec<TILTypeInfo>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -316,7 +338,7 @@ enum TILBucketType {
     Zip(TILBucketZip),
 }
 
-impl Default for TILBucketType {
+impl std::default::Default for TILBucketType {
     fn default() -> Self {
         Self::None
     }
@@ -396,6 +418,49 @@ struct TILSection {
     def_align: u8,
     #[serde(skip)]
     optional: TILOptional,
+}
+
+struct NullTerminatedVisitor;
+impl<'de> Visitor<'de> for NullTerminatedVisitor {
+    type Value = Vec<u8>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("Expected valid string w/ length sequence.")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut vec: Vec<u8> = Vec::new();
+        loop {
+            let elem: u8 = seq.next_element().unwrap().unwrap();
+            if elem == '\x00' as u8 {
+                break;
+            }
+            vec.push(elem);
+        }
+        Ok(vec)
+    }
+}
+
+fn parse_null_terminated<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+    // TODO: Fix this, i'm currently using `usize::MAX` instead of an actual length
+    // TODO: because the other deserialize methods try deserializing the first element
+    // TODO: to find a length.
+    d.deserialize_tuple(usize::MAX, NullTerminatedVisitor)
+}
+
+fn parse_null_terminated_string<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    // TODO: Fix this, i'm currently using `usize::MAX` instead of an actual length
+    // TODO: because the other deserialize methods try deserializing the first element
+    // TODO: to find a length.
+    Ok(String::from_utf8_lossy(
+        d.deserialize_tuple(usize::MAX, NullTerminatedVisitor)
+            .unwrap()
+            .as_slice(),
+    )
+    .to_string())
 }
 
 struct StringVisitor;
@@ -514,12 +579,24 @@ impl From<IDBSection> for Option<SEGSection> {
 struct Consumer<'a> {
     offset: usize,
     buf: &'a Vec<u8>,
-    flags: &'a BitFlags<TILFlags>,
+    flags: Option<BitFlags<TILFlags>>,
 }
 
 impl<'a> Consumer<'a> {
-    fn new(offset: usize, buf: &'a Vec<u8>, flags: &'a BitFlags<TILFlags>) -> Consumer<'a> {
-        Consumer { offset, buf, flags }
+    fn new_with_flags(offset: usize, buf: &'a Vec<u8>, flags: BitFlags<TILFlags>) -> Consumer<'a> {
+        Consumer {
+            offset,
+            buf,
+            flags: Some(flags),
+        }
+    }
+
+    fn new(offset: usize, buf: &'a Vec<u8>) -> Consumer<'a> {
+        Consumer {
+            offset,
+            buf,
+            flags: None,
+        }
     }
 
     fn consume<T>(&mut self) -> T
@@ -531,18 +608,38 @@ impl<'a> Consumer<'a> {
         deserialized
     }
 
+    fn consume_type_info(&mut self) -> Option<TILTypeInfo> {
+        None
+    }
+
     fn consume_bucket(&mut self) -> TILBucketType {
         if self.offset > self.buf.len() {
             TILBucketType::None
         } else {
-            let bucket = if self.flags.intersects(TILFlags::Zip) {
-                TILBucketType::Zip(
-                    bincode::deserialize::<TILBucketZip>(&self.buf[self.offset..]).unwrap(),
-                )
+            let bucket = if self.flags.unwrap().intersects(TILFlags::Zip) {
+                let mut zip =
+                    bincode::deserialize::<TILBucketZip>(&self.buf[self.offset..]).unwrap();
+                TILBucketType::Zip(zip)
             } else {
-                TILBucketType::Default(
-                    bincode::deserialize::<TILBucket>(&self.buf[self.offset..]).unwrap(),
-                )
+                let mut def = bincode::deserialize::<TILBucket>(&self.buf[self.offset..]).unwrap();
+                if def.data.len > 0 {
+                    let mut type_consumer = Consumer::new(0, &def.data.data);
+                    for def_index in 0..def.ndefs {
+                        println!("len->>{}", def.data.len);
+                        def.type_info.push(type_consumer.consume());
+                        println!("TypeInfo->>{:#x?}", def.type_info.last().unwrap());
+                    }
+                }
+                /*
+                   defs = []
+                   offset = 0
+                   for _ in range(self.ndefs):
+                       _def = TILTypeInfo(self.format)
+                       offset = _def.vsParse(buf, offset=offset)
+                       defs.append(_def)
+                */
+
+                TILBucketType::Default(def)
             };
 
             self.offset += std::mem::size_of::<u64>()
@@ -565,7 +662,8 @@ impl From<IDBSection> for Option<TILSection> {
             let mut til_section: TILSection =
                 bincode::deserialize(section.section_buffer.as_slice()).unwrap();
 
-            let mut consumer = Consumer::new(0x51, &section.section_buffer, &til_section.flags);
+            let mut consumer =
+                Consumer::new_with_flags(0x51, &section.section_buffer, til_section.flags.clone());
 
             if til_section.flags.intersects(TILFlags::Esi) {
                 til_section.optional.size_s = consumer.consume();
@@ -605,7 +703,7 @@ impl IDB {
     pub fn new(bytes: &[u8]) -> Self {
         let header = IDBHeader::new(bytes).ok().expect("Invalid IDB header");
         let mut result = Self {
-            header: Default::default(),
+            header: std::default::Default::default(),
             id0: None,
             id1: None,
             nam: None,
