@@ -512,13 +512,13 @@ impl From<IDBSection> for Option<SEGSection> {
 }
 
 struct Consumer<'a> {
-    offset: &'a mut usize,
+    offset: usize,
     buf: &'a Vec<u8>,
     flags: &'a BitFlags<TILFlags>,
 }
 
 impl<'a> Consumer<'a> {
-    fn new(offset: &'a mut usize, buf: &'a Vec<u8>, flags: &'a BitFlags<TILFlags>) -> Consumer<'a> {
+    fn new(offset: usize, buf: &'a Vec<u8>, flags: &'a BitFlags<TILFlags>) -> Consumer<'a> {
         Consumer { offset, buf, flags }
     }
 
@@ -526,26 +526,26 @@ impl<'a> Consumer<'a> {
     where
         T: serde::de::Deserialize<'a>,
     {
-        let deserialized = bincode::deserialize(&self.buf[*self.offset..]).unwrap();
-        *self.offset += std::mem::size_of_val(&deserialized);
+        let deserialized = bincode::deserialize(&self.buf[self.offset..]).unwrap();
+        self.offset += std::mem::size_of_val(&deserialized);
         deserialized
     }
 
     fn consume_bucket(&mut self) -> TILBucketType {
-        if *self.offset > self.buf.len() {
+        if self.offset > self.buf.len() {
             TILBucketType::None
         } else {
             let bucket = if self.flags.intersects(TILFlags::Zip) {
                 TILBucketType::Zip(
-                    bincode::deserialize::<TILBucketZip>(&self.buf[*self.offset..]).unwrap(),
+                    bincode::deserialize::<TILBucketZip>(&self.buf[self.offset..]).unwrap(),
                 )
             } else {
                 TILBucketType::Default(
-                    bincode::deserialize::<TILBucket>(&self.buf[*self.offset..]).unwrap(),
+                    bincode::deserialize::<TILBucket>(&self.buf[self.offset..]).unwrap(),
                 )
             };
 
-            *self.offset += std::mem::size_of::<u64>()
+            self.offset += std::mem::size_of::<u64>()
                 + match &bucket {
                     TILBucketType::Zip(zip) => zip.data.len as usize,
                     TILBucketType::Default(default) => default.data.len as usize,
@@ -564,10 +564,8 @@ impl From<IDBSection> for Option<TILSection> {
         } else {
             let mut til_section: TILSection =
                 bincode::deserialize(section.section_buffer.as_slice()).unwrap();
-            let mut cur_offset = 0x51;
 
-            let mut consumer =
-                Consumer::new(&mut cur_offset, &section.section_buffer, &til_section.flags);
+            let mut consumer = Consumer::new(0x51, &section.section_buffer, &til_section.flags);
 
             if til_section.flags.intersects(TILFlags::Esi) {
                 til_section.optional.size_s = consumer.consume();
