@@ -1,4 +1,3 @@
-use crate::TILBucketType::Default;
 use bincode::{deserialize, Options};
 use derivative::Derivative;
 use enumflags2::{bitflags, make_bitflags, BitFlags};
@@ -6,6 +5,7 @@ use memoffset::{offset_of, span_of};
 use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::borrow::Borrow;
+use std::default::Default;
 use std::ffi::{CString, OsString};
 use std::fmt;
 
@@ -338,7 +338,7 @@ enum TILBucketType {
     Zip(TILBucketZip),
 }
 
-impl std::default::Default for TILBucketType {
+impl Default for TILBucketType {
     fn default() -> Self {
         Self::None
     }
@@ -703,7 +703,7 @@ impl IDB {
     pub fn new(bytes: &[u8]) -> Self {
         let header = IDBHeader::new(bytes).ok().expect("Invalid IDB header");
         let mut result = Self {
-            header: std::default::Default::default(),
+            header: Default::default(),
             id0: None,
             id1: None,
             nam: None,
