@@ -296,6 +296,13 @@ enum TILFlags {
 }
 
 #[derive(Deserialize, Default, Debug)]
+struct TILInitialTypeInfo {
+    flags: u32,
+    name: String,
+    ordinal: u64,
+}
+
+#[derive(Deserialize, Default, Debug)]
 struct TILTypeInfo {
     flags: u32,
     #[serde(deserialize_with = "parse_null_terminated_string")]
@@ -609,7 +616,28 @@ impl<'a> Consumer<'a> {
     }
 
     fn consume_type_info(&mut self) -> Option<TILTypeInfo> {
-        None
+        if self.offset > self.buf.len() {
+            None
+        } else {
+            let ti = bincode::deserialize::<TILTypeInfo>(&self.buf[self.offset..]).unwrap();
+            let off = std::mem::size_of_val(&ti.flags)
+                + std::mem::size_of_val(&ti.ordinal)
+                + std::mem::size_of_val(&ti.sclass)
+                + ti.name.len()
+                + ti.type_info.len()
+                + ti.fieldcmts.len()
+                + ti.fieldcmts.len()
+                + ti.cmt.len();
+            println!("ti.name.len()->>{:#x}", ti.name.len());
+            println!("ti.type_info.len()->>{:#x}", ti.type_info.len());
+            println!("ti.cmt.len()->>{:#x}", ti.cmt.len());
+            println!("ti.fields_buf.len()->>{:#x}", ti.fields_buf.len());
+            println!("ti.fieldcmts.len()->>{:#x}", ti.fieldcmts.len());
+            println!("offset->>{:#x}", off);
+            println!("totaloffset->>{:#x}", self.offset);
+            self.offset += off;
+            Some(ti)
+        }
     }
 
     fn consume_bucket(&mut self) -> TILBucketType {
@@ -626,7 +654,9 @@ impl<'a> Consumer<'a> {
                     let mut type_consumer = Consumer::new(0, &def.data.data);
                     for def_index in 0..def.ndefs {
                         println!("len->>{}", def.data.len);
-                        def.type_info.push(type_consumer.consume());
+
+                        def.type_info
+                            .push(type_consumer.consume_type_info().unwrap());
                         println!("TypeInfo->>{:#x?}", def.type_info.last().unwrap());
                     }
                 }
