@@ -838,9 +838,9 @@ fn main() {
     let idb_bytes = include_bytes!("/Users/admin/projects/idb/complicated-gcc.i64");
     let now = std::time::Instant::now();
     let idb = IDB::new(idb_bytes.as_slice());
-    println!("time to parse: {}ms", now.elapsed().as_millis());
+    println!("time to parse: {:?}", now.elapsed());
 
-    println!("{:#?}", idb);
+    println!("{:#x?}", idb);
     // println!("{:?}", idb.id0.as_ref().unwrap().get_page(1).kv_entries);
     // println!("{:?}", idb.id0.as_ref().unwrap().get_page(2).kv_entries);
     // println!("{:?}", idb.id0.as_ref().unwrap().get_page(3).kv_entries);
