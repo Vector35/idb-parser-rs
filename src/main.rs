@@ -295,25 +295,90 @@ enum TILFlags {
     Sld = 0x0100,
 }
 
-#[derive(Deserialize, Default, Debug)]
-struct TILInitialTypeInfo {
-    flags: u32,
-    name: String,
-    ordinal: u64,
+#[derive(Deserialize, Debug)]
+enum TILInitialTypeInfoType {
+    None,
+    Ordinal32(TILInitialTypeInfo<u32>),
+    Ordinal64(TILInitialTypeInfo<u64>),
+}
+
+impl Default for TILInitialTypeInfoType {
+    fn default() -> Self {
+        TILInitialTypeInfoType::None
+    }
 }
 
 #[derive(Deserialize, Default, Debug)]
-struct TILTypeInfo {
+struct TILInitialTypeInfo<T> {
     flags: u32,
     #[serde(deserialize_with = "parse_null_terminated_string")]
     name: String,
-    ordinal: u64,
+    ordinal: T,
+}
+
+struct InitialTypeInfoTypeVisitor;
+impl<'de> Visitor<'de> for InitialTypeInfoTypeVisitor {
+    type Value = TILInitialTypeInfoType;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("Expected valid vector w/ length sequence.")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let flags: u32 = seq.next_element::<u32>().unwrap().unwrap();
+        let mut vec: Vec<u8> = Vec::new();
+        loop {
+            let elem: u8 = seq.next_element().unwrap().unwrap();
+            if elem == '\x00' as u8 {
+                break;
+            }
+            vec.push(elem);
+        }
+        let name = String::from_utf8_lossy(vec.as_slice()).to_string();
+
+        if (flags >> 31u32) != 0 {
+            Ok(TILInitialTypeInfoType::Ordinal64(TILInitialTypeInfo {
+                flags,
+                name,
+                ordinal: seq.next_element().unwrap().unwrap(),
+            }))
+        } else {
+            Ok(TILInitialTypeInfoType::Ordinal32(TILInitialTypeInfo {
+                flags,
+                name,
+                ordinal: seq.next_element().unwrap().unwrap(),
+            }))
+        }
+    }
+}
+
+fn parse_til_initial_type_info<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<TILInitialTypeInfoType, D::Error> {
+    // TODO: Fix this, i'm currently using `usize::MAX` instead of an actual length
+    // TODO: because the other deserialize methods try deserializing the first element
+    // TODO: to find a length.
+    d.deserialize_tuple(usize::MAX, InitialTypeInfoTypeVisitor)
+}
+
+#[derive(Deserialize, Default, Derivative)]
+#[derivative(Debug)]
+struct TILTypeInfo {
+    #[serde(deserialize_with = "parse_til_initial_type_info")]
+    initial_type_info: TILInitialTypeInfoType,
     #[serde(deserialize_with = "parse_null_terminated")]
+    #[derivative(Debug = "ignore")]
     type_info: Vec<u8>,
     #[serde(deserialize_with = "parse_null_terminated_string")]
+    #[derivative(Debug = "ignore")]
     cmt: String,
     #[serde(deserialize_with = "parse_null_terminated")]
+    #[derivative(Debug = "ignore")]
     fields_buf: Vec<u8>,
+    #[derivative(Debug = "ignore")]
     #[serde(deserialize_with = "parse_null_terminated")]
     fieldcmts: Vec<u8>,
     sclass: u8,
@@ -351,9 +416,11 @@ impl Default for TILBucketType {
     }
 }
 
-#[derive(Deserialize, Default, Debug)]
+#[derive(Deserialize, Default, Derivative)]
+#[derivative(Debug)]
 struct VectorWithLength {
     len: u32,
+    #[derivative(Debug = "ignore")]
     data: Vec<u8>,
 }
 
@@ -620,21 +687,24 @@ impl<'a> Consumer<'a> {
             None
         } else {
             let ti = bincode::deserialize::<TILTypeInfo>(&self.buf[self.offset..]).unwrap();
-            let off = std::mem::size_of_val(&ti.flags)
-                + std::mem::size_of_val(&ti.ordinal)
+            let off = match &ti.initial_type_info {
+                TILInitialTypeInfoType::Ordinal64(tinfo) => {
+                    std::mem::size_of_val(&tinfo.flags)
+                        + tinfo.name.len()
+                        + std::mem::size_of_val(&tinfo.ordinal)
+                }
+                TILInitialTypeInfoType::Ordinal32(tinfo) => {
+                    std::mem::size_of_val(&tinfo.flags)
+                        + tinfo.name.len()
+                        + std::mem::size_of_val(&tinfo.ordinal)
+                }
+                _ => 0,
+            } + ti.type_info.len()
+                + ti.cmt.len()
+                + ti.fields_buf.len()
+                + ti.fieldcmts.len()
                 + std::mem::size_of_val(&ti.sclass)
-                + ti.name.len()
-                + ti.type_info.len()
-                + ti.fieldcmts.len()
-                + ti.fieldcmts.len()
-                + ti.cmt.len();
-            println!("ti.name.len()->>{:#x}", ti.name.len());
-            println!("ti.type_info.len()->>{:#x}", ti.type_info.len());
-            println!("ti.cmt.len()->>{:#x}", ti.cmt.len());
-            println!("ti.fields_buf.len()->>{:#x}", ti.fields_buf.len());
-            println!("ti.fieldcmts.len()->>{:#x}", ti.fieldcmts.len());
-            println!("offset->>{:#x}", off);
-            println!("totaloffset->>{:#x}", self.offset);
+                + 5;
             self.offset += off;
             Some(ti)
         }
@@ -653,21 +723,10 @@ impl<'a> Consumer<'a> {
                 if def.data.len > 0 {
                     let mut type_consumer = Consumer::new(0, &def.data.data);
                     for def_index in 0..def.ndefs {
-                        println!("len->>{}", def.data.len);
-
                         def.type_info
                             .push(type_consumer.consume_type_info().unwrap());
-                        println!("TypeInfo->>{:#x?}", def.type_info.last().unwrap());
                     }
                 }
-                /*
-                   defs = []
-                   offset = 0
-                   for _ in range(self.ndefs):
-                       _def = TILTypeInfo(self.format)
-                       offset = _def.vsParse(buf, offset=offset)
-                       defs.append(_def)
-                */
 
                 TILBucketType::Default(def)
             };
@@ -779,16 +838,36 @@ fn main() {
     let idb_bytes = include_bytes!("/Users/admin/projects/idb/complicated-gcc.i64");
     let now = std::time::Instant::now();
     let idb = IDB::new(idb_bytes.as_slice());
-    println!("time to parse: {} ns", now.elapsed().as_nanos());
+    println!("time to parse: {}ms", now.elapsed().as_millis());
 
     println!("{:#?}", idb);
-    println!("{:?}", idb.id0.as_ref().unwrap().get_page(1).kv_entries);
-    println!("{:?}", idb.id0.as_ref().unwrap().get_page(2).kv_entries);
-    println!("{:?}", idb.id0.as_ref().unwrap().get_page(3).kv_entries);
-    println!("{:?}", idb.id0.as_ref().unwrap().get_page(4).kv_entries);
-    println!("{:?}", idb.id0.as_ref().unwrap().get_page(5).kv_entries);
-    println!("{:?}", idb.id0.as_ref().unwrap().get_page(6).kv_entries);
-    println!("{:?}", idb.id0.as_ref().unwrap().get_page(7).kv_entries);
-    println!("{:?}", idb.id0.as_ref().unwrap().get_page(8).kv_entries);
-    println!("{:?}", idb.id0.as_ref().unwrap().get_page(9).kv_entries);
+    // println!("{:?}", idb.id0.as_ref().unwrap().get_page(1).kv_entries);
+    // println!("{:?}", idb.id0.as_ref().unwrap().get_page(2).kv_entries);
+    // println!("{:?}", idb.id0.as_ref().unwrap().get_page(3).kv_entries);
+    // println!("{:?}", idb.id0.as_ref().unwrap().get_page(4).kv_entries);
+    // println!("{:?}", idb.id0.as_ref().unwrap().get_page(5).kv_entries);
+    // println!("{:?}", idb.id0.as_ref().unwrap().get_page(6).kv_entries);
+    // println!("{:?}", idb.id0.as_ref().unwrap().get_page(7).kv_entries);
+    // println!("{:?}", idb.id0.as_ref().unwrap().get_page(8).kv_entries);
+    // println!("{:?}", idb.id0.as_ref().unwrap().get_page(9).kv_entries);
+
+    println!("-- TYPES --");
+    let til_bucket = &idb.til.as_ref().unwrap().optional.types;
+    match til_bucket {
+        TILBucketType::Default(bucket) => {
+            bucket
+                .type_info
+                .iter()
+                .for_each(|info| match &info.initial_type_info {
+                    TILInitialTypeInfoType::Ordinal32(tinfo) => {
+                        println!("{}", tinfo.name);
+                    }
+                    TILInitialTypeInfoType::Ordinal64(tinfo) => {
+                        println!("{}", tinfo.name);
+                    }
+                    _ => {}
+                })
+        }
+        _ => {}
+    }
 }
