@@ -8,6 +8,9 @@ use std::borrow::Borrow;
 use std::default::Default;
 use std::ffi::{CString, OsString};
 use std::fmt;
+mod utils;
+use utils::visitors;
+use utils::VectorWithLength;
 
 #[derive(Default, Deserialize, Debug)]
 struct IDBHeaderSerialize {
@@ -244,6 +247,54 @@ impl ID0Section {
     }
 }
 
+struct InitialTypeInfoTypeVisitor;
+impl<'de> Visitor<'de> for InitialTypeInfoTypeVisitor {
+    type Value = TILInitialTypeInfoType;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("Expected valid vector w/ length sequence.")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let flags: u32 = seq.next_element::<u32>().unwrap().unwrap();
+        let mut vec: Vec<u8> = Vec::new();
+        loop {
+            let elem: u8 = seq.next_element().unwrap().unwrap();
+            if elem == '\x00' as u8 {
+                break;
+            }
+            vec.push(elem);
+        }
+        let name = String::from_utf8_lossy(vec.as_slice()).to_string();
+
+        if (flags >> 31u32) != 0 {
+            Ok(TILInitialTypeInfoType::Ordinal64(TILInitialTypeInfo {
+                flags,
+                name,
+                ordinal: seq.next_element().unwrap().unwrap(),
+            }))
+        } else {
+            Ok(TILInitialTypeInfoType::Ordinal32(TILInitialTypeInfo {
+                flags,
+                name,
+                ordinal: seq.next_element().unwrap().unwrap(),
+            }))
+        }
+    }
+}
+
+fn parse_til_initial_type_info<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<TILInitialTypeInfoType, D::Error> {
+    // TODO: Fix this, i'm currently using `usize::MAX` instead of an actual length
+    // TODO: because the other deserialize methods try deserializing the first element
+    // TODO: to find a length.s
+    d.deserialize_tuple(usize::MAX, InitialTypeInfoTypeVisitor)
+}
+
 #[derive(Deserialize, Default, Derivative)]
 #[derivative(Debug)]
 struct ID1Section {
@@ -311,57 +362,9 @@ impl Default for TILInitialTypeInfoType {
 #[derive(Deserialize, Default, Debug)]
 struct TILInitialTypeInfo<T> {
     flags: u32,
-    #[serde(deserialize_with = "parse_null_terminated_string")]
+    #[serde(deserialize_with = "visitors::parse_null_terminated_string")]
     name: String,
     ordinal: T,
-}
-
-struct InitialTypeInfoTypeVisitor;
-impl<'de> Visitor<'de> for InitialTypeInfoTypeVisitor {
-    type Value = TILInitialTypeInfoType;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("Expected valid vector w/ length sequence.")
-    }
-
-    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
-        let flags: u32 = seq.next_element::<u32>().unwrap().unwrap();
-        let mut vec: Vec<u8> = Vec::new();
-        loop {
-            let elem: u8 = seq.next_element().unwrap().unwrap();
-            if elem == '\x00' as u8 {
-                break;
-            }
-            vec.push(elem);
-        }
-        let name = String::from_utf8_lossy(vec.as_slice()).to_string();
-
-        if (flags >> 31u32) != 0 {
-            Ok(TILInitialTypeInfoType::Ordinal64(TILInitialTypeInfo {
-                flags,
-                name,
-                ordinal: seq.next_element().unwrap().unwrap(),
-            }))
-        } else {
-            Ok(TILInitialTypeInfoType::Ordinal32(TILInitialTypeInfo {
-                flags,
-                name,
-                ordinal: seq.next_element().unwrap().unwrap(),
-            }))
-        }
-    }
-}
-
-fn parse_til_initial_type_info<'de, D: Deserializer<'de>>(
-    d: D,
-) -> Result<TILInitialTypeInfoType, D::Error> {
-    // TODO: Fix this, i'm currently using `usize::MAX` instead of an actual length
-    // TODO: because the other deserialize methods try deserializing the first element
-    // TODO: to find a length.
-    d.deserialize_tuple(usize::MAX, InitialTypeInfoTypeVisitor)
 }
 
 #[derive(Deserialize, Default, Derivative)]
@@ -369,25 +372,27 @@ fn parse_til_initial_type_info<'de, D: Deserializer<'de>>(
 struct TILTypeInfo {
     #[serde(deserialize_with = "parse_til_initial_type_info")]
     initial_type_info: TILInitialTypeInfoType,
-    #[serde(deserialize_with = "parse_null_terminated")]
+    #[serde(deserialize_with = "visitors::parse_null_terminated")]
     #[derivative(Debug = "ignore")]
     type_info: Vec<u8>,
-    #[serde(deserialize_with = "parse_null_terminated_string")]
+    #[serde(deserialize_with = "visitors::parse_null_terminated_string")]
     #[derivative(Debug = "ignore")]
     cmt: String,
-    #[serde(deserialize_with = "parse_null_terminated")]
+    #[serde(deserialize_with = "visitors::parse_null_terminated")]
     #[derivative(Debug = "ignore")]
     fields_buf: Vec<u8>,
     #[derivative(Debug = "ignore")]
-    #[serde(deserialize_with = "parse_null_terminated")]
+    #[serde(deserialize_with = "visitors::parse_null_terminated")]
     fieldcmts: Vec<u8>,
     sclass: u8,
+    #[serde(skip)]
+    fields: Vec<String>,
 }
 
 #[derive(Deserialize, Default, Debug)]
 struct TILBucket {
     ndefs: u32,
-    #[serde(deserialize_with = "parse_vec_len")]
+    #[serde(deserialize_with = "visitors::parse_vec_len")]
     data: VectorWithLength,
     #[serde(skip)]
     type_info: Vec<TILTypeInfo>,
@@ -397,7 +402,7 @@ struct TILBucket {
 struct TILBucketZip {
     ndefs: u32,
     size: u32,
-    #[serde(deserialize_with = "parse_vec_len")]
+    #[serde(deserialize_with = "visitors::parse_vec_len")]
     data: VectorWithLength,
     #[serde(skip)]
     type_info: Vec<TILTypeInfo>,
@@ -414,47 +419,6 @@ impl Default for TILBucketType {
     fn default() -> Self {
         Self::None
     }
-}
-
-#[derive(Deserialize, Default, Derivative)]
-#[derivative(Debug)]
-struct VectorWithLength {
-    len: u32,
-    #[derivative(Debug = "ignore")]
-    data: Vec<u8>,
-}
-
-struct VectorWithLengthVisitor;
-impl<'de> Visitor<'de> for VectorWithLengthVisitor {
-    type Value = VectorWithLength;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("Expected valid vector w/ length sequence.")
-    }
-
-    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
-        let len: u32 = seq.next_element().unwrap().unwrap();
-        if len == 0 {
-            return Ok(VectorWithLength::default());
-        }
-
-        Ok(VectorWithLength {
-            len,
-            data: (0..len)
-                .map(|_| -> u8 { seq.next_element().unwrap_or_default().unwrap_or(0) })
-                .collect::<Vec<u8>>(),
-        })
-    }
-}
-
-fn parse_vec_len<'de, D: Deserializer<'de>>(d: D) -> Result<VectorWithLength, D::Error> {
-    // TODO: Fix this, i'm currently using `usize::MAX` instead of an actual length
-    // TODO: because the other deserialize methods try deserializing the first element
-    // TODO: to find a length.
-    d.deserialize_tuple(usize::MAX, VectorWithLengthVisitor)
 }
 
 #[derive(Deserialize, Default, Debug)]
@@ -492,49 +456,6 @@ struct TILSection {
     def_align: u8,
     #[serde(skip)]
     optional: TILOptional,
-}
-
-struct NullTerminatedVisitor;
-impl<'de> Visitor<'de> for NullTerminatedVisitor {
-    type Value = Vec<u8>;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("Expected valid string w/ length sequence.")
-    }
-
-    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
-        let mut vec: Vec<u8> = Vec::new();
-        loop {
-            let elem: u8 = seq.next_element().unwrap().unwrap();
-            if elem == '\x00' as u8 {
-                break;
-            }
-            vec.push(elem);
-        }
-        Ok(vec)
-    }
-}
-
-fn parse_null_terminated<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
-    // TODO: Fix this, i'm currently using `usize::MAX` instead of an actual length
-    // TODO: because the other deserialize methods try deserializing the first element
-    // TODO: to find a length.
-    d.deserialize_tuple(usize::MAX, NullTerminatedVisitor)
-}
-
-fn parse_null_terminated_string<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
-    // TODO: Fix this, i'm currently using `usize::MAX` instead of an actual length
-    // TODO: because the other deserialize methods try deserializing the first element
-    // TODO: to find a length.
-    Ok(String::from_utf8_lossy(
-        d.deserialize_tuple(usize::MAX, NullTerminatedVisitor)
-            .unwrap()
-            .as_slice(),
-    )
-    .to_string())
 }
 
 struct StringVisitor;
@@ -686,7 +607,18 @@ impl<'a> Consumer<'a> {
         if self.offset > self.buf.len() {
             None
         } else {
-            let ti = bincode::deserialize::<TILTypeInfo>(&self.buf[self.offset..]).unwrap();
+            let mut ti = bincode::deserialize::<TILTypeInfo>(&self.buf[self.offset..]).unwrap();
+            let mut le_vec: Vec<String> = Vec::new();
+            let mut pos = 0;
+            while pos < ti.fields_buf.len() {
+                let len = ti.fields_buf[pos];
+                le_vec.push(
+                    String::from_utf8_lossy(&ti.fields_buf[pos + 1..pos + len as usize])
+                        .to_string(),
+                );
+                pos += len as usize;
+            }
+            ti.fields = le_vec;
             let off = match &ti.initial_type_info {
                 TILInitialTypeInfoType::Ordinal64(tinfo) => {
                     std::mem::size_of_val(&tinfo.flags)
