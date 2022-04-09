@@ -1,8 +1,7 @@
 use crate::sections::til::{TILInitialTypeInfo, TILInitialTypeInfoType};
 use crate::utils::{StringWithLength, VectorWithLength};
-use derivative::Derivative;
 use serde::de::{SeqAccess, Visitor};
-use serde::{Deserialize, Deserializer};
+use serde::Deserializer;
 use std::fmt;
 
 struct NullTerminatedVisitor;

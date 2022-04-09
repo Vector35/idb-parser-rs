@@ -3,7 +3,6 @@ use crate::sections::{
     til::TILFlags, til::TILSection, IDBSection, IDBSectionHeader,
 };
 use crate::utils::consumer::Consumer;
-use derivative::Derivative;
 use serde::Deserialize;
 use std::default::Default;
 

@@ -1,9 +1,7 @@
 pub mod consumer;
 pub mod visitors;
 use derivative::Derivative;
-use serde::de::{SeqAccess, Visitor};
-use serde::{Deserialize, Deserializer};
-use std::fmt;
+use serde::Deserialize;
 
 #[derive(Deserialize, Default, Derivative)]
 #[derivative(Debug)]

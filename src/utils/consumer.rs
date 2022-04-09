@@ -1,7 +1,7 @@
 use crate::sections::til::{
     TILBucket, TILBucketType, TILBucketZip, TILFlags, TILInitialTypeInfoType, TILTypeInfo,
 };
-use enumflags2::{bitflags, BitFlags};
+use enumflags2::BitFlags;
 
 pub struct Consumer<'a> {
     offset: usize,
