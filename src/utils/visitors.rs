@@ -1,21 +1,70 @@
 use crate::sections::til::{TILInitialTypeInfo, TILInitialTypeInfoType};
-use crate::utils::{StringWithLength, VectorWithLength};
+use crate::utils::{LengthPrefixString, LengthPrefixVector};
 use serde::de::{SeqAccess, Visitor};
 use serde::Deserializer;
 use std::fmt;
 
-struct NullTerminatedVisitor;
-impl<'de> Visitor<'de> for NullTerminatedVisitor {
-    type Value = Vec<u8>;
+/// This macro just removes lots of boiler plate that is needed for
+/// creating a visitor in serde.
+///
+/// # Parameters
+/// * `StructName`- Name of the structure that will contain visitor
+/// * `parser_name` || `(parser_name...)` - Name of the parser function that serde can reference
+/// * `InternalType` - The internal type that serde will hold and expect from the return of visitor
+/// * `|seq|` - The name chosen to reference the sequence of elements
+/// * `{}` - Sequence processing block
+/// * `|d|<RetTy>` - The name chosen to reference the deserializer <return type of deserializer>
+/// * `{}` || `{}...` -  Deserialization processing block
+///
+/// # Usage
+/// ```
+/// gen_visitor!(
+///     impl StructName fn (parser_name, ...) for InternalType
+///     |seq| { process_sequence(seq) },
+///     |d|<RetTy> { process_deserializer(d) }, ...
+/// )
+/// ```
+macro_rules! gen_visitor {
+    (impl $visitor_name:ident fn $parse_name:ident for $type_name:ty, |$seq:ident|$visit_seq:expr, |$d:ident|<$ret:ty>$parse:expr) => {
+        gen_visitor!(impl $visitor_name fn ($parse_name) for $type_name, |$seq|$visit_seq, |$d|<$ret>$parse);
+    };
+    (impl $visitor_name:ident fn ($($parse_name:ident),*) for $type_name:ty, |$seq:ident|$visit_seq:expr, $(|$d:ident|<$ret:ty>$parse:expr),*) => {
+        struct $visitor_name;
+        impl<'de> Visitor<'de> for $visitor_name {
+            type Value = $type_name;
 
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("Expected valid string w/ length sequence.")
-    }
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("Unexpected data")
+            }
 
-    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
+            fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut $seq = seq;
+                $visit_seq
+            }
+        }
+
+        $(
+            pub fn $parse_name<'de, D: Deserializer<'de>>(d: D) -> Result<$ret, D::Error> {
+                let $d = d;
+                $parse
+            }
+        )*
+    };
+}
+
+/*
+   TODO: Fix all instances of deserializers using `deserialize_tuple(usize::MAX)`
+   TODO: I'm using `usize::MAX` instead of the actual length due to the length
+   TODO: typically being unknown and due to other deserialize methods attempting
+   TODO: to deserialize the first element assuming its a length.
+*/
+
+gen_visitor!(
+    impl NullTerminatedVisitor fn (parse_null_terminated, parse_null_terminated_string) for Vec<u8>,
+    |seq| {
         let mut vec: Vec<u8> = Vec::new();
         loop {
             let elem: u8 = seq.next_element().unwrap().unwrap();
@@ -25,49 +74,41 @@ impl<'de> Visitor<'de> for NullTerminatedVisitor {
             vec.push(elem);
         }
         Ok(vec)
+    },
+    |d|<Vec<u8>> d.deserialize_tuple(usize::MAX, NullTerminatedVisitor),
+    |d|<String> {
+        Ok(String::from_utf8_lossy(
+            d.deserialize_tuple(usize::MAX, NullTerminatedVisitor)
+                .unwrap()
+                .as_slice(),
+        )
+        .to_string())
     }
-}
+);
 
-struct VectorWithLengthVisitor;
-impl<'de> Visitor<'de> for VectorWithLengthVisitor {
-    type Value = VectorWithLength;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("Expected valid vector w/ length sequence.")
-    }
-
-    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
+gen_visitor!(
+    impl LengthPrefixVectorVisitor fn parse_length_prefix_vector for LengthPrefixVector,
+    |seq| {
         let len: u32 = seq.next_element().unwrap().unwrap();
         if len == 0 {
-            return Ok(VectorWithLength::default());
+            return Ok(LengthPrefixVector::default());
         }
 
-        Ok(VectorWithLength {
+        Ok(LengthPrefixVector {
             len,
             data: (0..len)
                 .map(|_| -> u8 { seq.next_element().unwrap_or_default().unwrap_or(0) })
                 .collect::<Vec<u8>>(),
         })
-    }
-}
+    },
+    |d|<LengthPrefixVector> d.deserialize_tuple(usize::MAX, LengthPrefixVectorVisitor)
+);
 
-struct StringVisitor;
-impl<'de> Visitor<'de> for StringVisitor {
-    type Value = StringWithLength;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("Expected valid string w/ length sequence.")
-    }
-
-    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
+gen_visitor!(
+    impl LengthPrefixStringVisitor fn parse_length_prefix_string for LengthPrefixString,
+    |seq| {
         let len: u8 = seq.next_element().unwrap().unwrap();
-        Ok(StringWithLength {
+        Ok(LengthPrefixString {
             len,
             data: String::from_utf8_lossy(
                 (0..len)
@@ -80,21 +121,13 @@ impl<'de> Visitor<'de> for StringVisitor {
             )
             .to_string(),
         })
-    }
-}
+    },
+    |d|<LengthPrefixString> d.deserialize_tuple(usize::MAX, LengthPrefixStringVisitor)
+);
 
-struct InitialTypeInfoTypeVisitor;
-impl<'de> Visitor<'de> for InitialTypeInfoTypeVisitor {
-    type Value = TILInitialTypeInfoType;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("Expected valid vector w/ length sequence.")
-    }
-
-    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
+gen_visitor!(
+    impl TILInitialTypeInfoTypeVisitor fn parse_til_initial_type_info for TILInitialTypeInfoType,
+    |seq| {
         let flags: u32 = seq.next_element::<u32>().unwrap().unwrap();
         let mut vec: Vec<u8> = Vec::new();
         loop {
@@ -119,39 +152,6 @@ impl<'de> Visitor<'de> for InitialTypeInfoTypeVisitor {
                 ordinal: seq.next_element().unwrap().unwrap(),
             }))
         }
-    }
-}
-
-/*
-   TODO: Fix all instances of deserializers using `deserialize_tuple(usize::MAX)`
-   TODO: I'm using `usize::MAX` instead of the actual length due to the length
-   TODO: typically being unknown and due to other deserialize methods try deserializing
-   TODO: the first element assuming its a length.
-*/
-
-pub fn parse_cstr<'de, D: Deserializer<'de>>(d: D) -> Result<StringWithLength, D::Error> {
-    d.deserialize_tuple(usize::MAX, StringVisitor)
-}
-
-pub fn parse_til_initial_type_info<'de, D: Deserializer<'de>>(
-    d: D,
-) -> Result<TILInitialTypeInfoType, D::Error> {
-    d.deserialize_tuple(usize::MAX, InitialTypeInfoTypeVisitor)
-}
-
-pub fn parse_null_terminated<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
-    d.deserialize_tuple(usize::MAX, NullTerminatedVisitor)
-}
-
-pub fn parse_null_terminated_string<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
-    Ok(String::from_utf8_lossy(
-        d.deserialize_tuple(usize::MAX, NullTerminatedVisitor)
-            .unwrap()
-            .as_slice(),
-    )
-    .to_string())
-}
-
-pub fn parse_vec_len<'de, D: Deserializer<'de>>(d: D) -> Result<VectorWithLength, D::Error> {
-    d.deserialize_tuple(usize::MAX, VectorWithLengthVisitor)
-}
+    },
+    |d|<TILInitialTypeInfoType> d.deserialize_tuple(usize::MAX, TILInitialTypeInfoTypeVisitor)
+);

@@ -1,6 +1,6 @@
 use crate::sections::IDBSectionHeader;
 use crate::utils::visitors;
-use crate::utils::{StringWithLength, VectorWithLength};
+use crate::utils::{LengthPrefixString, LengthPrefixVector};
 use derivative::Derivative;
 use enumflags2::{bitflags, BitFlags};
 use serde::Deserialize;
@@ -67,8 +67,8 @@ pub struct TILTypeInfo {
 #[derive(Deserialize, Default, Debug)]
 pub struct TILBucket {
     pub ndefs: u32,
-    #[serde(deserialize_with = "visitors::parse_vec_len")]
-    pub data: VectorWithLength,
+    #[serde(deserialize_with = "visitors::parse_length_prefix_vector")]
+    pub data: LengthPrefixVector,
     #[serde(skip)]
     pub type_info: Vec<TILTypeInfo>,
 }
@@ -77,8 +77,8 @@ pub struct TILBucket {
 pub struct TILBucketZip {
     pub ndefs: u32,
     pub size: u32,
-    #[serde(deserialize_with = "visitors::parse_vec_len")]
-    pub data: VectorWithLength,
+    #[serde(deserialize_with = "visitors::parse_length_prefix_vector")]
+    pub data: LengthPrefixVector,
     #[serde(skip)]
     pub type_info: Vec<TILTypeInfo>,
 }
@@ -119,10 +119,10 @@ pub struct TILSection {
     pub signature: [u8; 6],
     pub format: u32,
     pub flags: BitFlags<TILFlags>,
-    #[serde(deserialize_with = "visitors::parse_cstr")]
-    pub title: StringWithLength,
-    #[serde(deserialize_with = "visitors::parse_cstr")]
-    pub base: StringWithLength,
+    #[serde(deserialize_with = "visitors::parse_length_prefix_string")]
+    pub title: LengthPrefixString,
+    #[serde(deserialize_with = "visitors::parse_length_prefix_string")]
+    pub base: LengthPrefixString,
     pub id: u8,
     pub cm: u8,
     pub size_i: u8,
