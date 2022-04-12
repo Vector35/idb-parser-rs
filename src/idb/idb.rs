@@ -1,6 +1,6 @@
 use crate::sections::{
     id0::ID0Section, id1::ID1Section, id2::ID2Section, nam::NAMSection, seg::SEGSection,
-    til::TILFlags, til::TILSection, IDBSection, IDBSectionHeader,
+    til::TILFlags, til::TILSection, til::TILSection2, IDBSection, IDBSectionHeader,
 };
 use crate::utils::consumer::Consumer;
 use serde::Deserialize;
@@ -88,7 +88,7 @@ pub struct IDB {
     pub id1: Option<ID1Section>,
     pub nam: Option<NAMSection>,
     pub seg: Option<SEGSection>,
-    pub til: Option<TILSection>,
+    pub til: Option<TILSection2>,
     pub id2: Option<ID2Section>,
 }
 
@@ -148,37 +148,15 @@ impl From<IDBSection> for Option<SEGSection> {
     }
 }
 
-impl From<IDBSection> for Option<TILSection> {
+impl From<IDBSection> for Option<TILSection2> {
     fn from(section: IDBSection) -> Self {
         if section.header.length == 0 {
             None
         } else {
-            let mut til_section: TILSection =
-                bincode::deserialize(section.section_buffer.as_slice()).unwrap();
-
-            let mut consumer =
-                Consumer::new_with_flags(0x51, &section.section_buffer, til_section.flags.clone());
-
-            if til_section.flags.intersects(TILFlags::Esi) {
-                til_section.optional.size_s = consumer.consume();
-                til_section.optional.size_l = consumer.consume();
-                til_section.optional.size_ll = consumer.consume();
+            match bincode::deserialize::<TILSection2>(section.section_buffer.as_slice()) {
+                Ok(sec) => Some(sec),
+                Err(_) => None,
             }
-
-            if til_section.flags.intersects(TILFlags::Sld) {
-                til_section.optional.size_ldbl = consumer.consume();
-            }
-
-            til_section.optional.syms = consumer.consume_bucket();
-
-            if til_section.flags.intersects(TILFlags::Ord) {
-                til_section.optional.type_ordinal_numbers = consumer.consume();
-            }
-
-            til_section.optional.types = consumer.consume_bucket();
-            til_section.optional.macros = consumer.consume_bucket();
-
-            Some(til_section)
         }
     }
 }

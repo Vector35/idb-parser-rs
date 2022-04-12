@@ -105,12 +105,11 @@ gen_visitor!(
 );
 
 gen_visitor!(
-    impl LengthPrefixStringVisitor fn parse_length_prefix_string for LengthPrefixString,
+    impl LengthPrefixStringVisitor fn parse_length_prefix_string for String,
     |seq| {
         let len: u8 = seq.next_element().unwrap().unwrap();
-        Ok(LengthPrefixString {
-            len,
-            data: String::from_utf8_lossy(
+        Ok(
+            String::from_utf8_lossy(
                 (0..len)
                     .map(|_| {
                         let elem: u8 = seq.next_element().unwrap().unwrap();
@@ -118,11 +117,12 @@ gen_visitor!(
                     })
                     .collect::<Vec<u8>>()
                     .as_slice(),
-            )
-            .to_string(),
-        })
+            ).to_string()
+        )
     },
-    |d|<LengthPrefixString> d.deserialize_tuple(usize::MAX, LengthPrefixStringVisitor)
+    |d|<String> {
+        d.deserialize_tuple(usize::MAX, LengthPrefixStringVisitor)
+    }
 );
 
 gen_visitor!(

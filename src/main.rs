@@ -21,7 +21,7 @@ fn main() {
     println!("{:?}", idb.id0.as_ref().unwrap().get_page(9).kv_entries);
 
     println!("-- TYPES --");
-    let til_bucket = &idb.til.as_ref().unwrap().optional.types;
+    let til_bucket = &idb.til.as_ref().unwrap().types;
     match til_bucket {
         TILBucketType::Default(bucket) => {
             bucket

@@ -3,7 +3,8 @@ use crate::utils::visitors;
 use crate::utils::{LengthPrefixString, LengthPrefixVector};
 use derivative::Derivative;
 use enumflags2::{bitflags, BitFlags};
-use serde::Deserialize;
+use serde::de::{SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer};
 use std::default::Default;
 
 #[bitflags]
@@ -120,9 +121,9 @@ pub struct TILSection {
     pub format: u32,
     pub flags: BitFlags<TILFlags>,
     #[serde(deserialize_with = "visitors::parse_length_prefix_string")]
-    pub title: LengthPrefixString,
+    pub title: String,
     #[serde(deserialize_with = "visitors::parse_length_prefix_string")]
-    pub base: LengthPrefixString,
+    pub base: String,
     pub id: u8,
     pub cm: u8,
     pub size_i: u8,
@@ -131,4 +132,128 @@ pub struct TILSection {
     pub def_align: u8,
     #[serde(skip)]
     pub optional: TILOptional,
+}
+
+#[derive(Default, Derivative)]
+#[derivative(Debug)]
+pub struct TILSection2 {
+    pub header: IDBSectionHeader,
+    pub signature: [u8; 6],
+    pub format: u32,
+    pub flags: BitFlags<TILFlags>,
+    pub title_len: u8,
+    pub title: String,
+    pub base_len: u8,
+    pub base: String,
+    pub id: u8,
+    pub cm: u8,
+    pub size_i: u8,
+    pub size_b: u8,
+    pub size_e: u8,
+    pub def_align: u8,
+    pub size_s: Option<u8>,
+    pub size_l: Option<u8>,
+    pub size_ll: Option<u8>,
+    pub size_ldbl: Option<u8>,
+    pub syms: TILBucketType,
+    pub type_ordinal_numbers: Option<u32>,
+    pub types: TILBucketType,
+    pub macros: TILBucketType,
+}
+
+fn visit_len_pref_str<'de, A>(seq: &mut A) -> Result<(u8, String), A::Error>
+where
+    A: SeqAccess<'de>,
+{
+    let len = seq.next_element::<u8>()?.unwrap();
+    let str = String::from_utf8(
+        (0..len)
+            .map(|_| seq.next_element::<u8>().unwrap().unwrap())
+            .collect::<Vec<u8>>(),
+    )
+    .unwrap();
+    Ok((len, str))
+}
+
+struct Yep;
+impl<'de> Visitor<'de> for Yep {
+    type Value = TILSection2;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("Unexpected data")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let header = seq.next_element()?.unwrap();
+        let signature = seq.next_element()?.unwrap();
+        let format = seq.next_element()?.unwrap();
+        let flags: BitFlags<TILFlags> = seq.next_element()?.unwrap();
+        let (title_len, title) = visit_len_pref_str(&mut seq)?;
+        let (base_len, base) = visit_len_pref_str(&mut seq)?;
+        let id = seq.next_element()?.unwrap();
+        let cm = seq.next_element()?.unwrap();
+        let size_i = seq.next_element()?.unwrap();
+        let size_b = seq.next_element()?.unwrap();
+        let size_e = seq.next_element()?.unwrap();
+        let def_align = seq.next_element()?.unwrap();
+        println!("OK");
+
+        let mut size_s: Option<u8> = None;
+        let mut size_l: Option<u8> = None;
+        let mut size_ll: Option<u8> = None;
+        let mut size_ldbl: Option<u8> = None;
+        let mut type_ordinal_numbers: Option<u32> = None;
+        if flags.intersects(TILFlags::Esi) {
+            size_s = Some(seq.next_element()?.unwrap());
+            size_l = Some(seq.next_element()?.unwrap());
+            size_ll = Some(seq.next_element()?.unwrap());
+        }
+        let syms = seq.next_element()?.unwrap();
+        if flags.intersects(TILFlags::Sld) {
+            size_ldbl = Some(seq.next_element()?.unwrap());
+        }
+        if flags.intersects(TILFlags::Ord) {
+            type_ordinal_numbers = Some(seq.next_element()?.unwrap());
+        }
+        let types = seq.next_element()?.unwrap();
+        let macros = seq.next_element()?.unwrap();
+
+        Ok(TILSection2 {
+            header,
+            signature,
+            format,
+            flags,
+            title_len,
+            title,
+            base_len,
+            base,
+            id,
+            cm,
+            size_i,
+            size_b,
+            size_e,
+            def_align,
+            size_s,
+            size_l,
+            size_ll,
+            size_ldbl,
+            syms,
+            type_ordinal_numbers,
+            types,
+            macros,
+            ..Default::default()
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for TILSection2 {
+    fn deserialize<D>(deserializer: D) -> Result<TILSection2, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_tuple(usize::MAX, Yep)
+    }
 }
