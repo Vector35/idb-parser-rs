@@ -1,6 +1,6 @@
 use crate::sections::{
     id0::ID0Section, id1::ID1Section, id2::ID2Section, nam::NAMSection, seg::SEGSection,
-    til::TILFlags, til::TILSection, til::TILSection2, IDBSection, IDBSectionHeader,
+    til::TILFlags, til::TILSection, IDBSection, IDBSectionHeader,
 };
 use crate::utils::consumer::Consumer;
 use serde::Deserialize;
@@ -88,7 +88,7 @@ pub struct IDB {
     pub id1: Option<ID1Section>,
     pub nam: Option<NAMSection>,
     pub seg: Option<SEGSection>,
-    pub til: Option<TILSection2>,
+    pub til: Option<TILSection>,
     pub id2: Option<ID2Section>,
 }
 
@@ -148,12 +148,12 @@ impl From<IDBSection> for Option<SEGSection> {
     }
 }
 
-impl From<IDBSection> for Option<TILSection2> {
+impl From<IDBSection> for Option<TILSection> {
     fn from(section: IDBSection) -> Self {
         if section.header.length == 0 {
             None
         } else {
-            match bincode::deserialize::<TILSection2>(section.section_buffer.as_slice()) {
+            match bincode::deserialize::<TILSection>(section.section_buffer.as_slice()) {
                 Ok(sec) => Some(sec),
                 Err(_) => None,
             }

@@ -112,34 +112,9 @@ pub struct TILOptional {
     pub macros: TILBucketType,
 }
 
-#[derive(Deserialize, Default, Derivative)]
-#[derivative(Debug)]
-pub struct TILSection {
-    #[derivative(Debug = "ignore")]
-    #[serde(skip)]
-    pub section_buffer: Vec<u8>,
-
-    pub header: IDBSectionHeader,
-    pub signature: [u8; 6],
-    pub format: u32,
-    pub flags: BitFlags<TILFlags>,
-    #[serde(deserialize_with = "visitors::parse_length_prefix_string")]
-    pub title: String,
-    #[serde(deserialize_with = "visitors::parse_length_prefix_string")]
-    pub base: String,
-    pub id: u8,
-    pub cm: u8,
-    pub size_i: u8,
-    pub size_b: u8,
-    pub size_e: u8,
-    pub def_align: u8,
-    #[serde(skip)]
-    pub optional: TILOptional,
-}
-
 #[derive(Default, Derivative)]
 #[derivative(Debug)]
-pub struct TILSection2 {
+pub struct TILSection {
     pub header: IDBSectionHeader,
     pub signature: [u8; 6],
     pub format: u32,
@@ -301,94 +276,125 @@ where
     Ok((len, str))
 }
 
-struct Yep;
-impl<'de> Visitor<'de> for Yep {
-    type Value = TILSection2;
+macro_rules! gen_parser {
+    (parse <$ty:ty> visit $ident:ident, |$seq:ident|<$ret:ident>, [$($fields:ident),*], [$($tokens:tt),*]) => {
+        struct $ident;
+        impl<'de> Visitor<'de> for $ident {
+            type Value = $ty;
 
-    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-        formatter.write_str("Unexpected data")
-    }
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("Unexpected data")
+            }
 
-    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
-        let header = seq.next_element()?.unwrap();
-        let signature = seq.next_element()?.unwrap();
-        let format = seq.next_element()?.unwrap();
-        let flags: BitFlags<TILFlags> = seq.next_element()?.unwrap();
-        let (title_len, title) = visit_len_pref_str(&mut seq)?;
-        let (base_len, base) = visit_len_pref_str(&mut seq)?;
-        let id = seq.next_element()?.unwrap();
-        let cm = seq.next_element()?.unwrap();
-        let size_i = seq.next_element()?.unwrap();
-        let size_b = seq.next_element()?.unwrap();
-        let size_e = seq.next_element()?.unwrap();
-        let def_align = seq.next_element()?.unwrap();
-        println!("OK");
-
-        let mut size_s: Option<u8> = None;
-        let mut size_l: Option<u8> = None;
-        let mut size_ll: Option<u8> = None;
-        let mut size_ldbl: Option<u8> = None;
-        let mut type_ordinal_numbers: Option<u32> = None;
-        if flags.intersects(TILFlags::Esi) {
-            size_s = Some(seq.next_element()?.unwrap());
-            size_l = Some(seq.next_element()?.unwrap());
-            size_ll = Some(seq.next_element()?.unwrap());
+            gen_parser_body!(
+                |$seq|<$ret>,
+                [$($fields),*],
+                [$($tokens),*]
+            );
         }
-        let syms = match visit_til_bucket_type(&mut seq, &flags) {
-            Ok(ok) => Some(ok),
-            Err(_) => None,
-        };
-        if flags.intersects(TILFlags::Sld) {
-            size_ldbl = Some(seq.next_element()?.unwrap());
-        }
-        if flags.intersects(TILFlags::Ord) {
-            type_ordinal_numbers = Some(seq.next_element()?.unwrap());
-        }
-        let types = match visit_til_bucket_type(&mut seq, &flags) {
-            Ok(ok) => Some(ok),
-            Err(_) => None,
-        };
-        let macros = match visit_til_bucket_type(&mut seq, &flags) {
-            Ok(ok) => Some(ok),
-            Err(_) => None,
-        };
 
-        Ok(TILSection2 {
-            header,
-            signature,
-            format,
-            flags,
-            title_len,
-            title,
-            base_len,
-            base,
-            id,
-            cm,
-            size_i,
-            size_b,
-            size_e,
-            def_align,
-            size_s,
-            size_l,
-            size_ll,
-            size_ldbl,
-            syms,
-            type_ordinal_numbers,
-            types,
-            macros,
-            ..Default::default()
-        })
-    }
+        impl<'de> Deserialize<'de> for $ty {
+            fn deserialize<D>(deserializer: D) -> Result<$ty, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                deserializer.deserialize_tuple(usize::MAX, $ident)
+            }
+        }
+    };
 }
 
-impl<'de> Deserialize<'de> for TILSection2 {
-    fn deserialize<D>(deserializer: D) -> Result<TILSection2, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_tuple(usize::MAX, Yep)
-    }
+macro_rules! gen_parser_body {
+    (|$seq:ident|<$ret:ident>, [$($fields:ident),*], [$($tokens:tt),*]) => {
+        fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            let mut $seq = seq;
+            $(
+                gen_field_opt!($tokens, $seq);
+            )*
+
+            Ok($ret {
+                $(
+                    $fields,
+                )*
+            })
+        }
+    };
 }
+
+macro_rules! gen_field_opt {
+    ($field:ident, $seq:ident) => {
+        let $field = $seq.next_element()?.unwrap();
+    };
+    (($field:ident<$ty:ty>), $seq:ident) => {
+        let $field: $ty = $seq.next_element()?.unwrap();
+    };
+    ((? $field:ident), $seq:ident) => {
+        let $field = match $seq.next_element() {
+            Ok(ok) => ok,
+            Err(_) => None,
+        };
+    };
+    ((? $field:ident . $body:expr), $seq:ident) => {
+        let mut $field: Option<_> = None;
+        if $body {
+            $field = Some($seq.next_element()?.unwrap());
+        }
+    };
+    ((? $field:ident => $body:expr), $seq:ident) => {
+        let $field = match $body {
+            Ok(ok) => Some(ok),
+            Err(_) => None,
+        };
+    };
+    (($field:ident => $body:expr), $seq:ident) => {
+        let $field = match $body {
+            Ok(ok) => ok,
+            Err(err) => panic!("{:?}", err),
+        };
+    };
+    // not proud of this one..
+    ((($field:ident, $field2:ident) => $body:expr), $seq:ident) => {
+        let ($field, $field2) = match $body {
+            Ok(ok) => ok,
+            Err(err) => panic!("{:?}", err),
+        };
+    };
+}
+
+gen_parser!(
+    parse <TILSection> visit TILSection2Visitor,
+    |seq|<TILSection>,
+    [
+        header, signature, format, flags,
+        title_len, title, base_len, base,
+        id, cm, size_i, size_b, size_e,
+        def_align, size_s, size_l, size_ll,
+        size_ldbl, syms, type_ordinal_numbers,
+        types, macros
+    ],
+    [
+        header,
+        signature,
+        format,
+        (flags<BitFlags<TILFlags>>),
+        ((base_len, base) => visit_len_pref_str(&mut seq)),
+        ((title_len, title) => visit_len_pref_str(&mut seq)),
+        id,
+        cm,
+        size_i,
+        size_b,
+        size_e,
+        def_align,
+        (? size_s . flags.intersects(TILFlags::Esi)),
+        (? size_l . flags.intersects(TILFlags::Esi)),
+        (? size_ll . flags.intersects(TILFlags::Esi)),
+        (? syms => visit_til_bucket_type(&mut seq, &flags)),
+        (? size_ldbl . flags.intersects(TILFlags::Sld)),
+        (? type_ordinal_numbers . flags.intersects(TILFlags::Ord)),
+        (? types => visit_til_bucket_type(&mut seq, &flags)),
+        (? macros => visit_til_bucket_type(&mut seq, &flags))
+    ]
+);
