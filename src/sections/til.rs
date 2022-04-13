@@ -1,5 +1,6 @@
 use crate::sections::IDBSectionHeader;
 use crate::utils::visitors;
+use crate::utils::visitors::parse_null_terminated;
 use crate::utils::{LengthPrefixString, LengthPrefixVector};
 use derivative::Derivative;
 use enumflags2::{bitflags, BitFlags};
@@ -69,7 +70,7 @@ pub struct TILTypeInfo {
 pub struct TILBucket {
     pub ndefs: u32,
     #[serde(deserialize_with = "visitors::parse_length_prefix_vector")]
-    pub data: LengthPrefixVector,
+    pub data: Vec<u8>,
     #[serde(skip)]
     pub type_info: Vec<TILTypeInfo>,
 }
@@ -79,7 +80,7 @@ pub struct TILBucketZip {
     pub ndefs: u32,
     pub size: u32,
     #[serde(deserialize_with = "visitors::parse_length_prefix_vector")]
-    pub data: LengthPrefixVector,
+    pub data: Vec<u8>,
     #[serde(skip)]
     pub type_info: Vec<TILTypeInfo>,
 }
@@ -161,17 +162,102 @@ pub struct TILSection2 {
     pub macros: TILBucketType,
 }
 
+fn visit_null_terminated<'de, A>(seq: &mut A) -> Result<Vec<u8>, A::Error>
+where
+    A: SeqAccess<'de>,
+{
+    let mut vec: Vec<u8> = Vec::new();
+    loop {
+        let elem: u8 = seq.next_element()?.unwrap();
+        if elem == '\x00' as u8 {
+            break;
+        }
+        vec.push(elem);
+    }
+    Ok(vec)
+}
+
+fn visit_til_type_info<'de, A>(seq: &mut A) -> Result<TILTypeInfo, A::Error>
+where
+    A: SeqAccess<'de>,
+{
+    let flags: u32 = seq.next_element::<u32>()?.unwrap();
+    let name = String::from_utf8_lossy(visit_null_terminated(seq)?.as_slice()).to_string();
+    let initial_type_info = if (flags >> 31u32) != 0 {
+        TILInitialTypeInfoType::Ordinal64(TILInitialTypeInfo {
+            flags,
+            name,
+            ordinal: seq.next_element()?.unwrap(),
+        })
+    } else {
+        TILInitialTypeInfoType::Ordinal32(TILInitialTypeInfo {
+            flags,
+            name,
+            ordinal: seq.next_element()?.unwrap(),
+        })
+    };
+    let type_info = visit_null_terminated(seq)?;
+    let cmt = String::from_utf8_lossy(visit_null_terminated(seq)?.as_slice()).to_string();
+    let fields_buf = visit_null_terminated(seq)?;
+    let fieldcmts = visit_null_terminated(seq)?;
+    let sclass = seq.next_element()?.unwrap();
+    let mut pos = 0;
+    let mut fields: Vec<String> = Vec::new();
+    while pos < fields_buf.len() {
+        let (len, str) = visit_len_pref_str(seq)?;
+        fields.push(str);
+        pos += len as usize;
+    }
+
+    Ok(TILTypeInfo {
+        initial_type_info,
+        type_info,
+        cmt,
+        fields_buf,
+        fieldcmts,
+        sclass,
+        fields,
+    })
+}
+
+fn visit_til_bucket_type<'de, A>(
+    seq: &mut A,
+    flags: &BitFlags<TILFlags>,
+) -> Result<TILBucketType, A::Error>
+where
+    A: SeqAccess<'de>,
+{
+    if flags.intersects(TILFlags::Zip) {
+        Ok(TILBucketType::Zip(TILBucketZip::default()))
+    } else {
+        let ndefs = seq.next_element()?.unwrap();
+        let len: u32 = seq.next_element()?.unwrap();
+        let data = (0..len)
+            .map(|_| -> u8 { seq.next_element().unwrap_or_default().unwrap_or(0) })
+            .collect::<Vec<u8>>();
+        let type_info = (0..ndefs)
+            .map(|_| visit_til_type_info(seq).unwrap())
+            .collect();
+        Ok(TILBucketType::Default(TILBucket {
+            ndefs,
+            data,
+            type_info,
+        }))
+    }
+}
+
 fn visit_len_pref_str<'de, A>(seq: &mut A) -> Result<(u8, String), A::Error>
 where
     A: SeqAccess<'de>,
 {
     let len = seq.next_element::<u8>()?.unwrap();
-    let str = String::from_utf8(
+    let str = String::from_utf8_lossy(
         (0..len)
             .map(|_| seq.next_element::<u8>().unwrap().unwrap())
-            .collect::<Vec<u8>>(),
+            .collect::<Vec<u8>>()
+            .as_slice(),
     )
-    .unwrap();
+    .to_string();
     Ok((len, str))
 }
 
@@ -211,15 +297,15 @@ impl<'de> Visitor<'de> for Yep {
             size_l = Some(seq.next_element()?.unwrap());
             size_ll = Some(seq.next_element()?.unwrap());
         }
-        let syms = seq.next_element()?.unwrap();
+        let syms = visit_til_bucket_type(&mut seq, &flags)?;
         if flags.intersects(TILFlags::Sld) {
             size_ldbl = Some(seq.next_element()?.unwrap());
         }
         if flags.intersects(TILFlags::Ord) {
             type_ordinal_numbers = Some(seq.next_element()?.unwrap());
         }
-        let types = seq.next_element()?.unwrap();
-        let macros = seq.next_element()?.unwrap();
+        let types = visit_til_bucket_type(&mut seq, &flags)?;
+        let macros = visit_til_bucket_type(&mut seq, &flags)?;
 
         Ok(TILSection2 {
             header,

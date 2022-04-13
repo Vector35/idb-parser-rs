@@ -87,21 +87,20 @@ gen_visitor!(
 );
 
 gen_visitor!(
-    impl LengthPrefixVectorVisitor fn parse_length_prefix_vector for LengthPrefixVector,
+    impl LengthPrefixVectorVisitor fn parse_length_prefix_vector for Vec<u8>,
     |seq| {
         let len: u32 = seq.next_element().unwrap().unwrap();
         if len == 0 {
-            return Ok(LengthPrefixVector::default());
+            return Ok(Vec::new());
         }
 
-        Ok(LengthPrefixVector {
-            len,
-            data: (0..len)
+        Ok(
+            (0..len)
                 .map(|_| -> u8 { seq.next_element().unwrap_or_default().unwrap_or(0) })
-                .collect::<Vec<u8>>(),
-        })
+                .collect::<Vec<u8>>()
+        )
     },
-    |d|<LengthPrefixVector> d.deserialize_tuple(usize::MAX, LengthPrefixVectorVisitor)
+    |d|<Vec<u8>> d.deserialize_tuple(usize::MAX, LengthPrefixVectorVisitor)
 );
 
 gen_visitor!(

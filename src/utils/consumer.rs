@@ -88,8 +88,8 @@ impl<'a> Consumer<'a> {
                 TILBucketType::Zip(zip)
             } else {
                 let mut def = bincode::deserialize::<TILBucket>(&self.buf[self.offset..]).unwrap();
-                if def.data.len > 0 {
-                    let mut type_consumer = Consumer::new(0, &def.data.data);
+                if def.data.len() > 0 {
+                    let mut type_consumer = Consumer::new(0, &def.data);
                     for def_index in 0..def.ndefs {
                         def.type_info
                             .push(type_consumer.consume_type_info().unwrap());
@@ -101,8 +101,8 @@ impl<'a> Consumer<'a> {
 
             self.offset += std::mem::size_of::<u64>()
                 + match &bucket {
-                    TILBucketType::Zip(zip) => zip.data.len as usize,
-                    TILBucketType::Default(default) => default.data.len as usize,
+                    TILBucketType::Zip(zip) => zip.data.len() as usize,
+                    TILBucketType::Default(default) => default.data.len() as usize,
                     _ => 0usize,
                 };
 
