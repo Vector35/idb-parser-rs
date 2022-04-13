@@ -43,38 +43,39 @@ impl<'a> Consumer<'a> {
         if self.offset > self.buf.len() {
             None
         } else {
-            let mut ti = bincode::deserialize::<TILTypeInfo>(&self.buf[self.offset..]).unwrap();
-            let mut le_vec: Vec<String> = Vec::new();
-            let mut pos = 0;
-            while pos < ti.fields_buf.len() {
-                let len = ti.fields_buf[pos];
-                le_vec.push(
-                    String::from_utf8_lossy(&ti.fields_buf[pos + 1..pos + len as usize])
-                        .to_string(),
-                );
-                pos += len as usize;
-            }
-            ti.fields = le_vec;
-            let off = match &ti.initial_type_info {
-                TILInitialTypeInfoType::Ordinal64(tinfo) => {
-                    std::mem::size_of_val(&tinfo.flags)
-                        + tinfo.name.len()
-                        + std::mem::size_of_val(&tinfo.ordinal)
-                }
-                TILInitialTypeInfoType::Ordinal32(tinfo) => {
-                    std::mem::size_of_val(&tinfo.flags)
-                        + tinfo.name.len()
-                        + std::mem::size_of_val(&tinfo.ordinal)
-                }
-                _ => 0,
-            } + ti.type_info.len()
-                + ti.cmt.len()
-                + ti.fields_buf.len()
-                + ti.fieldcmts.len()
-                + std::mem::size_of_val(&ti.sclass)
-                + 5;
-            self.offset += off;
-            Some(ti)
+            None
+            // let mut ti = bincode::deserialize::<TILTypeInfo>(&self.buf[self.offset..]).unwrap();
+            // let mut le_vec: Vec<String> = Vec::new();
+            // let mut pos = 0;
+            // while pos < ti.fields_buf.len() {
+            //     let len = ti.fields_buf[pos];
+            //     le_vec.push(
+            //         String::from_utf8_lossy(&ti.fields_buf[pos + 1..pos + len as usize])
+            //             .to_string(),
+            //     );
+            //     pos += len as usize;
+            // }
+            // ti.fields = le_vec;
+            // let off = match &ti.initial_type_info {
+            //     TILInitialTypeInfoType::Ordinal64(tinfo) => {
+            //         std::mem::size_of_val(&tinfo.flags)
+            //             + tinfo.name.len()
+            //             + std::mem::size_of_val(&tinfo.ordinal)
+            //     }
+            //     TILInitialTypeInfoType::Ordinal32(tinfo) => {
+            //         std::mem::size_of_val(&tinfo.flags)
+            //             + tinfo.name.len()
+            //             + std::mem::size_of_val(&tinfo.ordinal)
+            //     }
+            //     _ => 0,
+            // } + ti.type_info.len()
+            //     + ti.cmt.len()
+            //     + ti.fields_buf.len()
+            //     + ti.fieldcmts.len()
+            //     + std::mem::size_of_val(&ti.sclass)
+            //     + 5;
+            // self.offset += off;
+            // Some(ti)
         }
     }
 

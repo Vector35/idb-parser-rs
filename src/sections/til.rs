@@ -2,11 +2,14 @@ use crate::sections::IDBSectionHeader;
 use crate::utils::visitors;
 use crate::utils::visitors::parse_null_terminated;
 use crate::utils::{LengthPrefixString, LengthPrefixVector};
+use bincode::config::{AllowTrailing, FixintEncoding, WithOtherIntEncoding, WithOtherTrailing};
+use bincode::{DefaultOptions, Options};
 use derivative::Derivative;
 use enumflags2::{bitflags, BitFlags};
 use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::default::Default;
+use std::fmt::Formatter;
 
 #[bitflags]
 #[repr(u32)]
@@ -44,25 +47,24 @@ pub struct TILInitialTypeInfo<T> {
     pub ordinal: T,
 }
 
-#[derive(Deserialize, Default, Derivative)]
+#[derive(Default, Derivative)]
+pub struct TILTypeInfos {
+    infos: Vec<TILTypeInfo>,
+}
+
+#[derive(Default, Derivative)]
 #[derivative(Debug)]
 pub struct TILTypeInfo {
-    #[serde(deserialize_with = "visitors::parse_til_initial_type_info")]
     pub initial_type_info: TILInitialTypeInfoType,
-    #[serde(deserialize_with = "visitors::parse_null_terminated")]
     #[derivative(Debug = "ignore")]
     pub type_info: Vec<u8>,
-    #[serde(deserialize_with = "visitors::parse_null_terminated_string")]
     #[derivative(Debug = "ignore")]
     pub cmt: String,
-    #[serde(deserialize_with = "visitors::parse_null_terminated")]
     #[derivative(Debug = "ignore")]
     pub fields_buf: Vec<u8>,
     #[derivative(Debug = "ignore")]
-    #[serde(deserialize_with = "visitors::parse_null_terminated")]
     pub fieldcmts: Vec<u8>,
     pub sclass: u8,
-    #[serde(skip)]
     pub fields: Vec<String>,
 }
 
@@ -156,10 +158,10 @@ pub struct TILSection2 {
     pub size_l: Option<u8>,
     pub size_ll: Option<u8>,
     pub size_ldbl: Option<u8>,
-    pub syms: TILBucketType,
+    pub syms: Option<TILBucketType>,
     pub type_ordinal_numbers: Option<u32>,
-    pub types: TILBucketType,
-    pub macros: TILBucketType,
+    pub types: Option<TILBucketType>,
+    pub macros: Option<TILBucketType>,
 }
 
 fn visit_null_terminated<'de, A>(seq: &mut A) -> Result<Vec<u8>, A::Error>
@@ -177,47 +179,75 @@ where
     Ok(vec)
 }
 
-fn visit_til_type_info<'de, A>(seq: &mut A) -> Result<TILTypeInfo, A::Error>
-where
-    A: SeqAccess<'de>,
-{
-    let flags: u32 = seq.next_element::<u32>()?.unwrap();
-    let name = String::from_utf8_lossy(visit_null_terminated(seq)?.as_slice()).to_string();
-    let initial_type_info = if (flags >> 31u32) != 0 {
-        TILInitialTypeInfoType::Ordinal64(TILInitialTypeInfo {
-            flags,
-            name,
-            ordinal: seq.next_element()?.unwrap(),
-        })
-    } else {
-        TILInitialTypeInfoType::Ordinal32(TILInitialTypeInfo {
-            flags,
-            name,
-            ordinal: seq.next_element()?.unwrap(),
-        })
-    };
-    let type_info = visit_null_terminated(seq)?;
-    let cmt = String::from_utf8_lossy(visit_null_terminated(seq)?.as_slice()).to_string();
-    let fields_buf = visit_null_terminated(seq)?;
-    let fieldcmts = visit_null_terminated(seq)?;
-    let sclass = seq.next_element()?.unwrap();
-    let mut pos = 0;
-    let mut fields: Vec<String> = Vec::new();
-    while pos < fields_buf.len() {
-        let (len, str) = visit_len_pref_str(seq)?;
-        fields.push(str);
-        pos += len as usize;
+struct Yep2;
+impl<'de> Visitor<'de> for Yep2 {
+    type Value = TILTypeInfos;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("Unexpected data")
     }
 
-    Ok(TILTypeInfo {
-        initial_type_info,
-        type_info,
-        cmt,
-        fields_buf,
-        fieldcmts,
-        sclass,
-        fields,
-    })
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let ndefs = seq.next_element::<u8>()?.unwrap();
+        let mut infos = TILTypeInfos::default();
+        for i in (0..ndefs) {
+            let flags: u32 = seq.next_element::<u32>()?.unwrap();
+            let name =
+                String::from_utf8_lossy(visit_null_terminated(&mut seq)?.as_slice()).to_string();
+            let initial_type_info = if (flags >> 31u32) != 0 {
+                TILInitialTypeInfoType::Ordinal64(TILInitialTypeInfo {
+                    flags,
+                    name,
+                    ordinal: seq.next_element()?.unwrap(),
+                })
+            } else {
+                TILInitialTypeInfoType::Ordinal32(TILInitialTypeInfo {
+                    flags,
+                    name,
+                    ordinal: seq.next_element()?.unwrap(),
+                })
+            };
+            let type_info = visit_null_terminated(&mut seq)?;
+            let cmt =
+                String::from_utf8_lossy(visit_null_terminated(&mut seq)?.as_slice()).to_string();
+            let fields_buf = visit_null_terminated(&mut seq)?;
+            let fieldcmts = visit_null_terminated(&mut seq)?;
+            let sclass = seq.next_element()?.unwrap();
+            let mut pos = 0;
+            let mut fields: Vec<String> = Vec::new();
+            while pos < fields_buf.len() {
+                let len = fields_buf[pos];
+                fields.push(
+                    String::from_utf8_lossy(&fields_buf[pos + 1..pos + len as usize]).to_string(),
+                );
+                pos += len as usize;
+            }
+
+            infos.infos.push(TILTypeInfo {
+                initial_type_info,
+                type_info,
+                cmt,
+                fields_buf,
+                fieldcmts,
+                sclass,
+                fields,
+            });
+        }
+
+        Ok(infos)
+    }
+}
+
+impl<'de> Deserialize<'de> for TILTypeInfos {
+    fn deserialize<D>(deserializer: D) -> Result<TILTypeInfos, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_tuple(usize::MAX, Yep2)
+    }
 }
 
 fn visit_til_bucket_type<'de, A>(
@@ -230,14 +260,24 @@ where
     if flags.intersects(TILFlags::Zip) {
         Ok(TILBucketType::Zip(TILBucketZip::default()))
     } else {
-        let ndefs = seq.next_element()?.unwrap();
+        let ndefs: u32 = seq.next_element()?.unwrap();
         let len: u32 = seq.next_element()?.unwrap();
-        let data = (0..len)
-            .map(|_| -> u8 { seq.next_element().unwrap_or_default().unwrap_or(0) })
-            .collect::<Vec<u8>>();
-        let type_info = (0..ndefs)
-            .map(|_| visit_til_type_info(seq).unwrap())
-            .collect();
+        let mut data = if len != 0 {
+            (0..len)
+                .map(|_| -> u8 { seq.next_element().unwrap_or_default().unwrap_or(0) })
+                .collect()
+        } else {
+            Vec::<u8>::new()
+        };
+
+        let type_info = if ndefs != 0 {
+            data.insert(0, ndefs as u8);
+            let collected = bincode::deserialize::<TILTypeInfos>(data.as_slice()).unwrap();
+            data.remove(0);
+            collected.infos
+        } else {
+            TILTypeInfos::default().infos
+        };
         Ok(TILBucketType::Default(TILBucket {
             ndefs,
             data,
@@ -297,15 +337,24 @@ impl<'de> Visitor<'de> for Yep {
             size_l = Some(seq.next_element()?.unwrap());
             size_ll = Some(seq.next_element()?.unwrap());
         }
-        let syms = visit_til_bucket_type(&mut seq, &flags)?;
+        let syms = match visit_til_bucket_type(&mut seq, &flags) {
+            Ok(ok) => Some(ok),
+            Err(_) => None,
+        };
         if flags.intersects(TILFlags::Sld) {
             size_ldbl = Some(seq.next_element()?.unwrap());
         }
         if flags.intersects(TILFlags::Ord) {
             type_ordinal_numbers = Some(seq.next_element()?.unwrap());
         }
-        let types = visit_til_bucket_type(&mut seq, &flags)?;
-        let macros = visit_til_bucket_type(&mut seq, &flags)?;
+        let types = match visit_til_bucket_type(&mut seq, &flags) {
+            Ok(ok) => Some(ok),
+            Err(_) => None,
+        };
+        let macros = match visit_til_bucket_type(&mut seq, &flags) {
+            Ok(ok) => Some(ok),
+            Err(_) => None,
+        };
 
         Ok(TILSection2 {
             header,

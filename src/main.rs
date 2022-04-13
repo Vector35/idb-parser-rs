@@ -21,22 +21,20 @@ fn main() {
     println!("{:?}", idb.id0.as_ref().unwrap().get_page(9).kv_entries);
 
     println!("-- TYPES --");
-    let til_bucket = &idb.til.as_ref().unwrap().types;
-    match til_bucket {
-        TILBucketType::Default(bucket) => {
-            bucket
-                .type_info
-                .iter()
-                .for_each(|info| match &info.initial_type_info {
-                    TILInitialTypeInfoType::Ordinal32(tinfo) => {
-                        println!("{}", tinfo.name);
-                    }
-                    TILInitialTypeInfoType::Ordinal64(tinfo) => {
-                        println!("{}", tinfo.name);
-                    }
-                    _ => {}
-                })
+    if let Some(til_bucket) = &idb.til.as_ref().unwrap().types {
+        match til_bucket {
+            TILBucketType::Default(bucket) => bucket.type_info.iter().for_each(|info| match &info
+                .initial_type_info
+            {
+                TILInitialTypeInfoType::Ordinal32(tinfo) => {
+                    println!("{}", tinfo.name);
+                }
+                TILInitialTypeInfoType::Ordinal64(tinfo) => {
+                    println!("{}", tinfo.name);
+                }
+                _ => {}
+            }),
+            _ => {}
         }
-        _ => {}
     }
 }
