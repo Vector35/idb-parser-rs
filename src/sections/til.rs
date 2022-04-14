@@ -23,8 +23,7 @@ pub enum TILFlags {
     Sld = 0x0100,
 }
 
-#[derive(Default, Derivative)]
-#[derivative(Debug)]
+#[derive(Default, Debug)]
 pub struct TILSection {
     pub header: IDBSectionHeader,
     pub signature: [u8; 6],
