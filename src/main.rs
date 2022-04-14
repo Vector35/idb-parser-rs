@@ -1,7 +1,8 @@
 mod idb;
 mod sections;
+#[macro_use]
 mod utils;
-use sections::til::{TILBucketType, TILInitialTypeInfoType};
+use sections::til::TILBucketType;
 
 fn main() {
     let idb_bytes = include_bytes!("/Users/admin/projects/idb/complicated-gcc.i64");
@@ -21,20 +22,11 @@ fn main() {
     println!("{:?}", idb.id0.as_ref().unwrap().get_page(9).kv_entries);
 
     println!("-- TYPES --");
-    if let Some(til_bucket) = &idb.til.as_ref().unwrap().types {
-        match til_bucket {
-            TILBucketType::Default(bucket) => bucket.type_info.iter().for_each(|info| match &info
-                .initial_type_info
-            {
-                TILInitialTypeInfoType::Ordinal32(tinfo) => {
-                    println!("{}", tinfo.name);
-                }
-                TILInitialTypeInfoType::Ordinal64(tinfo) => {
-                    println!("{}", tinfo.name);
-                }
-                _ => {}
-            }),
-            _ => {}
-        }
+    match &idb.til.as_ref().unwrap().types {
+        TILBucketType::Default(Some(bucket)) => bucket
+            .type_info
+            .iter()
+            .for_each(|info| println!("{}", info.name)),
+        _ => {}
     }
 }

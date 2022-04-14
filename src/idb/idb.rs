@@ -2,7 +2,6 @@ use crate::sections::{
     id0::ID0Section, id1::ID1Section, id2::ID2Section, nam::NAMSection, seg::SEGSection,
     til::TILFlags, til::TILSection, IDBSection, IDBSectionHeader,
 };
-use crate::utils::consumer::Consumer;
 use serde::Deserialize;
 use std::default::Default;
 
