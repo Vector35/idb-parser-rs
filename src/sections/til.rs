@@ -8,6 +8,9 @@ use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::default::Default;
 
+// 1300
+// 788
+
 #[bitflags]
 #[repr(u32)]
 #[derive(Deserialize, Debug, Copy, Clone, PartialEq)]
@@ -49,12 +52,141 @@ pub struct TILSection {
     pub macros: TILBucketType,
 }
 
+pub struct BaseTypeFlag {
+    pub flag: u8,
+}
+
+pub struct FullTypeFlag {
+    pub flag: u8,
+}
+
+#[derive(Deserialize, Default, Debug)]
+pub struct TypeFlag {
+    pub flag: u8,
+}
+
+impl TypeFlag {
+    pub fn get_base_type_flag(&self) -> BaseTypeFlag {
+        BaseTypeFlag {
+            flag: self.flag & 0x0F,
+        }
+    }
+
+    pub fn get_full_type_flag(&self) -> FullTypeFlag {
+        FullTypeFlag {
+            flag: self.flag & (0x0F | 0x30),
+        }
+    }
+}
+
+impl FullTypeFlag {
+    pub fn is_struct(&self) -> bool {
+        self.flag == (0x0D | 0x00)
+    }
+
+    pub fn is_union(&self) -> bool {
+        self.flag == (0x0D | 0x10)
+    }
+
+    pub fn is_struct_or_union(&self) -> bool {
+        self.is_struct() || self.is_union()
+    }
+}
+
+pub fn create_type_info<'de, A>(seq: &mut A) -> Result<Types, A::Error>
+where
+    A: SeqAccess<'de>,
+{
+    let typ = seq.next_element::<TypeFlag>()?.unwrap();
+    if typ.get_full_type_flag().is_struct() {
+        Ok(Types::Struct(seq.next_element()?.unwrap()))
+    } else {
+        Ok(Types::Unknown(consume_null_terminated(seq)?))
+    }
+}
+
+// {
+// let tinfo_data = consume_null_terminated(&mut seq)?;
+// let tflag = TypeFlag { flag: tinfo_data[0] } ;
+// if tflag.get_full_type_flag().is_struct_or_union() {
+// Types::Struct(bincode::deserialize::<StructType>(tinfo_data.as_slice()).unwrap())
+// } else {
+// Types::Unknown(tinfo_data)
+// }
+// }
+
+#[derive(Default, Debug)]
+pub struct PointerType {}
+#[derive(Default, Debug)]
+pub struct FunctionType {}
+#[derive(Default, Debug)]
+pub struct ArrayType {}
+#[derive(Default, Debug)]
+pub struct TypedefType {}
+#[derive(Default, Debug)]
+pub struct StructType {
+    n: u16,
+    junk: Vec<u8>,
+}
+
+// this isnt named very well ( fix later lol )
+pub fn consume_one_or_two_bytes<'de, A>(seq: &mut A) -> Result<u16, A::Error>
+where
+    A: SeqAccess<'de>,
+{
+    let initial: u16 = seq.next_element()?.unwrap();
+    let bytes = initial.to_le_bytes();
+    if (bytes[0] & 0x7F) == 0 {
+        Ok(initial - 1)
+    } else {
+        Ok((bytes[0] - 1) as u16)
+    }
+}
+
+gen_parser!(
+    parse <StructType> visit StructVisitor,
+    |seq|<StructType>,
+    [
+        n,
+        junk
+    ],
+    [
+        (n => consume_one_or_two_bytes(&mut seq)),
+        (junk => consume_null_terminated(&mut seq))
+    ]
+);
+
+#[derive(Default, Debug)]
+pub struct UnionType {}
+#[derive(Default, Debug)]
+pub struct EnumType {}
+#[derive(Default, Debug)]
+pub struct BitfieldType {}
+
+#[derive(Debug)]
+pub enum Types {
+    Unset,
+    Pointer(PointerType),
+    Function(FunctionType),
+    Array(ArrayType),
+    Typedef(TypedefType),
+    Struct(StructType),
+    Enum(EnumType),
+    Bitfield(BitfieldType),
+    Unknown(Vec<u8>),
+}
+impl Default for Types {
+    fn default() -> Self {
+        Types::Unset
+    }
+}
+
 #[derive(Default, Debug)]
 pub struct TILTypeInfo {
     pub flags: u32,
     pub name: String,
     pub ordinal: u64,
-    pub type_info: Vec<u8>,
+    pub info: Types,
     pub cmt: String,
     pub fields_buf: Vec<u8>,
     pub fieldcmts: Vec<u8>,
@@ -101,7 +233,7 @@ gen_parser!(
     parse <TILTypeInfo> visit TypeInfoVisitor,
     |seq|<TILTypeInfo>,
     [
-        flags, name, ordinal, type_info,
+        flags, name, ordinal, info,
         fields_buf, cmt, fieldcmts, sclass,
         fields
     ],
@@ -115,7 +247,7 @@ gen_parser!(
                 seq.next_element::<u32>()?.unwrap() as u64
             }
         ),
-        (type_info => consume_null_terminated(&mut seq)),
+        (info => create_type_info(&mut seq)),
         (cmt => consume_null_terminated_string(&mut seq)),
         (fields_buf => consume_null_terminated(&mut seq)),
         (fieldcmts => consume_null_terminated(&mut seq)),
