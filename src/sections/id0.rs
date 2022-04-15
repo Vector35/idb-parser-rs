@@ -1,17 +1,13 @@
 use crate::sections::IDBSectionHeader;
+use crate::{gen_field_opt, gen_parser, gen_parser_body};
 use derivative::Derivative;
-use serde::Deserialize;
+use serde::de::{SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer};
 use std::default::Default;
 
-#[derive(Deserialize, Default, Derivative)]
+#[derive(Default, Derivative)]
 #[derivative(Debug)]
 pub struct ID0Section {
-    #[derivative(Debug = "ignore")]
-    #[serde(skip)]
-    pub section_buffer: Vec<u8>,
-    #[serde(skip)]
-    pub btree_version: f32,
-
     pub header: IDBSectionHeader,
     pub next_free_offset: u32,
     pub page_size: u16,
@@ -19,8 +15,55 @@ pub struct ID0Section {
     pub record_count: u32,
     pub page_count: u32,
     pub _unk: u8,
-    pub signature: [u8; 25],
+    pub signature: String,
+    pub btree_version: f32,
+    #[derivative(Debug = "ignore")]
+    pub page_buf: Vec<u8>,
+    #[derivative(Debug = "ignore")]
+    pub pages: Vec<Option<Page>>,
 }
+
+gen_parser!(
+    parse <ID0Section> visit ID0SectionVisitor,
+    |seq|<ID0Section>,
+    [
+        header, next_free_offset, page_size, root_page,
+        record_count, page_count, _unk, signature,
+        btree_version, page_buf, pages
+    ],
+    [
+        header,
+        next_free_offset,
+        page_size,
+        root_page,
+        record_count,
+        page_count,
+        _unk,
+        (signature => .
+            String::from_utf8_lossy(
+                (0..25).map(|_|{
+                    seq.next_element().unwrap().unwrap()
+                })
+                .collect::<Vec<u8>>()
+                .as_slice())
+                .to_string()
+        ),
+        (btree_version => .
+            signature.chars()
+                .filter(|c| c.is_digit(10) || *c == '.')
+                .take(3)
+                .collect::<String>()
+                .parse::<f32>()
+                .unwrap()
+        ),
+        (mut page_buf => . {
+            (0..page_count as usize * page_size as usize)
+                .map(|_| -> u8 { seq.next_element().unwrap_or_default().unwrap_or(0) })
+                .collect::<Vec<u8>>()
+        }),
+        (pages => . Page::collect_pages(page_size, page_count, page_buf.as_slice()))
+    ]
+);
 
 #[derive(Deserialize, Default, Derivative)]
 #[derivative(Debug)]
@@ -54,6 +97,19 @@ pub struct Page {
 }
 
 impl Page {
+    pub fn collect_pages(page_size: u16, page_count: u32, bytes: &[u8]) -> Vec<Option<Page>> {
+        (0..page_count)
+            .map(|index| {
+                let offset = page_size as usize * index as usize;
+                if offset >= 44 {
+                    Some(Page::new(&bytes[offset - 44..]))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     pub fn new(data: &[u8]) -> Self {
         let pointer = bincode::deserialize(&data).unwrap();
         let entry_count = bincode::deserialize(&data[4..]).unwrap();
@@ -129,21 +185,5 @@ impl Page {
                 }
             })
             .collect()
-    }
-}
-
-impl ID0Section {
-    pub fn signature(&self) -> String {
-        String::from_utf8_lossy(&self.signature).to_string()
-    }
-
-    pub fn is_valid(&self) -> bool {
-        String::from_utf8_lossy(&self.signature).starts_with("B-tree")
-    }
-
-    pub fn get_page(&self, page_number: u16) -> Page {
-        let offset = self.page_size as usize * page_number as usize;
-        let page_buf = &self.section_buffer[offset..(offset + self.page_size as usize)];
-        Page::new(page_buf)
     }
 }

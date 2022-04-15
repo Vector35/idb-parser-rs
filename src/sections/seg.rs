@@ -9,6 +9,5 @@ pub struct SEGSection {
     #[derivative(Debug = "ignore")]
     #[serde(skip)]
     pub section_buffer: Vec<u8>,
-
     pub header: IDBSectionHeader,
 }
