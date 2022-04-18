@@ -109,10 +109,25 @@ where
     let mut vec: Vec<u8> = Vec::new();
     loop {
         let elem: u8 = seq.next_element()?.unwrap();
-        if elem == '\x00' as u8 {
+        if elem == '\0' as u8 {
             break;
         }
         vec.push(elem);
+    }
+    Ok(vec)
+}
+
+pub fn consume_with_null_terminated<'de, A>(seq: &mut A) -> Result<Vec<u8>, A::Error>
+where
+    A: SeqAccess<'de>,
+{
+    let mut vec: Vec<u8> = Vec::new();
+    loop {
+        let elem: u8 = seq.next_element()?.unwrap();
+        vec.push(elem);
+        if elem == '\0' as u8 {
+            break;
+        }
     }
     Ok(vec)
 }
@@ -140,5 +155,6 @@ pub fn parse_len_prefix_str_vec(vec: &Vec<u8>) -> Vec<String> {
         fields.push(String::from_utf8_lossy(&vec[pos + 1..pos + len as usize]).to_string());
         pos += len as usize;
     }
+    println!("fields->{:?}", fields);
     fields
 }

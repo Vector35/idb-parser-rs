@@ -36,17 +36,21 @@ fn main() {
                 .unwrap()
                 .info
             {
-                Types::Pointer(_) => {}
-                Types::Function(_) => {}
-                Types::Array(_) => {}
-                Types::Typedef(_) => {}
-                Types::Struct(str) => {
-                    println!("{:?}\n", str);
-                }
-                Types::Enum(_) => {}
-                Types::Bitfield(_) => {}
-                Types::Unknown(_) => {}
-                _ => {}
+                Some(typ) => match &typ.types {
+                    Types::Pointer(_) => {}
+                    Types::Function(_) => {}
+                    Types::Array(_) => {}
+                    Types::Typedef(_) => {}
+                    Types::Struct(str) => {
+                        println!("{:?}\n", str);
+                    }
+                    Types::Union(_) => {}
+                    Types::Enum(_) => {}
+                    Types::Bitfield(_) => {}
+                    Types::Unknown(_) => {}
+                    _ => {}
+                },
+                None => {}
             }
         }
         _ => {}
