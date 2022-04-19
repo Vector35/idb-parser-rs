@@ -12,11 +12,11 @@ fn main() {
     println!("time to parse: {:?}", now.elapsed());
     println!("{:?}", idb);
 
-    for page in idb.id0.unwrap().pages {
-        if let Some(page) = page {
-            println!("{:?}", page);
-        }
-    }
+    // for page in idb.id0.unwrap().pages {
+    //     if let Some(page) = page {
+    //         println!("{:?}", page);
+    //     }
+    // }
 
     println!("-- TYPES --");
     match &idb.til.as_ref().unwrap().types {

@@ -6,7 +6,9 @@ use derivative::Derivative;
 use enumflags2::{bitflags, BitFlags};
 use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
+use std::borrow::BorrowMut;
 use std::default::Default;
+use std::ops::Deref;
 
 // 1300
 // 788
@@ -60,12 +62,16 @@ pub struct FullTypeFlag {
     pub flag: u8,
 }
 
-#[derive(Deserialize, Default, Debug)]
 pub struct TypeFlag {
     pub flag: u8,
 }
 
-impl TypeFlag {
+#[derive(Deserialize, Default, Debug)]
+pub struct TypeMetadata {
+    pub flag: u8,
+}
+
+impl TypeMetadata {
     pub fn get_base_type_flag(&self) -> BaseTypeFlag {
         BaseTypeFlag {
             flag: self.flag & 0x0F,
@@ -75,6 +81,12 @@ impl TypeFlag {
     pub fn get_full_type_flag(&self) -> FullTypeFlag {
         FullTypeFlag {
             flag: self.flag & (0x0F | 0x30),
+        }
+    }
+
+    pub fn get_type_flag(&self) -> TypeFlag {
+        TypeFlag {
+            flag: self.flag & 0x30,
         }
     }
 }
@@ -132,6 +144,61 @@ pub struct TestTypes {
     pub types: Types,
 }
 
+pub struct TestTypesVec {
+    pub should_sdacl: u8,
+    pub mem_cnt: u16,
+    pub types_vec: Vec<Types>,
+}
+
+gen_parser!(
+    parse <TestTypesVec> visit TestTypesVecVisitor,
+    |seq|<TestTypesVec>,
+    [
+        should_sdacl,
+        mem_cnt,
+        types_vec
+    ],
+    [
+        should_sdacl,
+        mem_cnt,
+        (types_vec => . {
+            for _ in 0..mem_cnt {
+
+            }
+
+            let mut SHOULD_SDACL:(u8,bool) =(0,false);
+            (0..mem_cnt).map(|_| {
+                // if sdacl fail , create_next_Tinfo using failed sdacl as it will just be
+                // equivalent to the following Type
+                // TODO: i was trying to finish this b4 5pm so code is gross , will fix tmrw
+                if SHOULD_SDACL.1{
+                    create_type_info_test(&mut seq, TypeMetadata{flag:SHOULD_SDACL.0}).unwrap()
+                }else{
+                    let x = create_type_info(&mut seq);
+                    if should_sdacl == 1 {
+                        let sdacl = consume_sdacl(&mut seq);
+                        match sdacl {
+                            Ok(sdacl) => {
+                               if !sdacl.is_sdacl {
+                                    SHOULD_SDACL=(sdacl.sdacl,true);
+                                        x.unwrap()
+                                } else {
+                                    x.unwrap()
+                                }
+                            },
+                            Err(_) => {
+                                x.unwrap()
+                            }
+                        }
+                    } else {
+                        x.unwrap()
+                    }
+                }
+            }).collect()
+        })
+    ]
+);
+
 gen_parser!(
     parse <TestTypes> visit TestTypesVisitor,
     |seq|<TestTypes>,
@@ -143,43 +210,84 @@ gen_parser!(
     ]
 );
 
+pub fn create_type_info_test<'de, A>(seq: &mut A, typ: TypeMetadata) -> Result<Types, A::Error>
+where
+    A: SeqAccess<'de>,
+{
+    if typ.get_base_type_flag().is_typeid_last() || typ.get_base_type_flag().is_reserved() {
+        println!("!--UNSET!->{}", typ.flag);
+        Ok(Types::Unset)
+    } else {
+        if typ.get_base_type_flag().is_pointer() {
+            println!("  --POINTER!");
+            Ok(Types::Pointer(consume_null_terminated(seq)?))
+        } else if typ.get_base_type_flag().is_function() {
+            println!("  --FUNCTION!");
+            Ok(Types::Function(consume_null_terminated(seq)?))
+        } else if typ.get_base_type_flag().is_array() {
+            println!("  --ARRAY!");
+            Ok(Types::Array(seq.next_element()?.unwrap()))
+        } else if typ.get_full_type_flag().is_typedef() {
+            println!("  --TYPEDEF!");
+            Ok(Types::Typedef(seq.next_element()?.unwrap()))
+        } else if typ.get_full_type_flag().is_union() {
+            println!("--UNION!");
+            Ok(Types::Union(seq.next_element()?.unwrap()))
+        } else if typ.get_full_type_flag().is_struct() {
+            println!("--STRUCT!");
+            Ok(Types::Struct(seq.next_element()?.unwrap()))
+        } else if typ.get_full_type_flag().is_enum() {
+            println!("--ENUM!");
+            Ok(Types::Enum(consume_null_terminated(seq)?))
+        } else if typ.get_base_type_flag().is_bitfield() {
+            println!("  --BITFIELD!");
+            let mut bitfield: BitfieldType = seq.next_element()?.unwrap();
+            bitfield.nbytes = 1 << (typ.get_type_flag().flag >> 4);
+            Ok(Types::Bitfield(bitfield))
+        } else {
+            println!("--UNKNOWN!");
+            Ok(Types::Unknown(consume_null_terminated(seq)?))
+        }
+    }
+}
+
 pub fn create_type_info<'de, A>(seq: &mut A) -> Result<Types, A::Error>
 where
     A: SeqAccess<'de>,
 {
-    let typ = seq.next_element::<TypeFlag>()?.unwrap();
-    println!("typ->>{:?}", typ);
+    let typ = seq.next_element::<TypeMetadata>()?.unwrap();
     if typ.get_base_type_flag().is_typeid_last() || typ.get_base_type_flag().is_reserved() {
-        // println!("--UNSET!");
-        // seq.next_element::<u8>()?.unwrap();
+        println!("!--UNSET!->{}", typ.flag);
         Ok(Types::Unset)
     } else {
         if typ.get_base_type_flag().is_pointer() {
-            // println!("--POINTER!");
+            println!("  --POINTER!");
             Ok(Types::Pointer(consume_null_terminated(seq)?))
         } else if typ.get_base_type_flag().is_function() {
-            // println!("--FUNCTION!");
+            println!("  --FUNCTION!");
             Ok(Types::Function(consume_null_terminated(seq)?))
         } else if typ.get_base_type_flag().is_array() {
-            // println!("--ARRAY!");
-            Ok(Types::Array(consume_null_terminated(seq)?))
+            println!("  --ARRAY!");
+            Ok(Types::Array(seq.next_element()?.unwrap()))
         } else if typ.get_full_type_flag().is_typedef() {
-            // println!("--TYPEDEF!");
-            Ok(Types::Typedef(consume_null_terminated(seq)?))
+            println!("  --TYPEDEF!");
+            Ok(Types::Typedef(seq.next_element()?.unwrap()))
         } else if typ.get_full_type_flag().is_union() {
-            // println!("--UNION!");
-            Ok(Types::Union(consume_null_terminated(seq)?))
+            println!("--UNION!");
+            Ok(Types::Union(seq.next_element()?.unwrap()))
         } else if typ.get_full_type_flag().is_struct() {
-            // println!("--STRUCT!");
-            Ok(Types::Struct(consume_null_terminated(seq)?))
+            println!("--STRUCT!");
+            Ok(Types::Struct(seq.next_element()?.unwrap()))
         } else if typ.get_full_type_flag().is_enum() {
-            // println!("--ENUM!");
+            println!("--ENUM!");
             Ok(Types::Enum(consume_null_terminated(seq)?))
         } else if typ.get_base_type_flag().is_bitfield() {
-            // println!("--BITFIELD!");
-            Ok(Types::Bitfield(consume_null_terminated(seq)?))
+            println!("  --BITFIELD!");
+            let mut bitfield: BitfieldType = seq.next_element()?.unwrap();
+            bitfield.nbytes = 1 << (typ.get_type_flag().flag >> 4);
+            Ok(Types::Bitfield(bitfield))
         } else {
-            // println!("--UNKNOWN!");
+            println!("--UNKNOWN!");
             Ok(Types::Unknown(consume_null_terminated(seq)?))
         }
     }
@@ -189,16 +297,27 @@ where
 pub struct PointerType {}
 #[derive(Default, Debug)]
 pub struct FunctionType {}
+
 #[derive(Default, Debug)]
-pub struct ArrayType {}
+pub struct ArrayType {
+    elem_num: u16,
+    base: Box<Types>,
+}
+
 #[derive(Default, Debug)]
-pub struct TypedefType {}
+pub struct TypedefType {
+    buf: Vec<u8>,
+}
+
 #[derive(Default, Debug)]
 pub struct StructType {
     n: u16,
-    effective_alignment: u16,
-    taudt_bits: PossibleSdacl,
-    members: Vec<StructMember>,
+    is_ref: bool,
+    type_ref: Option<Box<Types>>,
+    ref_taudt: Option<PossibleSdacl>,
+    effective_alignment: Option<u16>,
+    taudt_bits: Option<PossibleSdacl>,
+    members: Option<Vec<Types>>,
 }
 
 // this isnt named very well ( fix later lol )
@@ -206,13 +325,21 @@ pub fn consume_one_or_two_bytes<'de, A>(seq: &mut A) -> Result<u16, A::Error>
 where
     A: SeqAccess<'de>,
 {
-    let initial: u16 = seq.next_element()?.unwrap();
-    let bytes = initial.to_le_bytes();
-    if (bytes[0] & 0x7F) == 0 {
-        Ok(initial - 1)
+    let mut val: u8 = seq.next_element()?.unwrap();
+    if (val & 0x80) == 1 {
+        val = val & 0x7f;
+        let other: u8 = seq.next_element()?.unwrap();
+        Ok(((val as u16) | (other as u16) << 7) - 1)
     } else {
-        Ok((bytes[0] - 1) as u16)
+        Ok((val - 1) as u16)
     }
+    // let initial: u16 = seq.next_element()?.unwrap();
+    // let bytes = initial.to_le_bytes();
+    // if (bytes[0] & 0x7F) == 0 {
+    //     Ok(initial - 1)
+    // } else {
+    //     Ok((bytes[0] - 1) as u16)
+    // }
 }
 
 pub fn consume_type_attr<'de, A>(seq: &mut A, tah: u8) -> Result<u16, A::Error>
@@ -232,14 +359,14 @@ where
                 panic!("OK");
             }
             val |= (next_byte & 0x7F) << shift;
-            if next_byte & 0x80 == 0 {
+            if next_byte & 0x80 == 1 {
                 break;
             }
             shift += 7
         }
     }
     let mut unk: Vec<String> = Vec::new();
-    if (val & 0x0010) == 0 {
+    if (val & 0x0010) == 1 {
         val = consume_one_or_two_bytes(seq)? as u8;
         for _ in 0..val {
             let len = consume_one_or_two_bytes(seq)?;
@@ -254,7 +381,7 @@ where
             unk.push(buf);
         }
     }
-    println!("vv{}", val);
+    println!("TYPEATTR->{}", val);
     return Ok(val as u16);
 }
 
@@ -266,8 +393,35 @@ pub struct PossibleSdacl {
 }
 
 #[derive(Default, Debug)]
+pub struct PossibleTah {
+    type_addr: u16,
+    tah: u8,
+    is_tah: bool,
+}
+
+#[derive(Default, Debug)]
 pub struct StructMember {
     typ: Types,
+}
+
+pub fn consume_tah<'de, A>(seq: &mut A) -> Result<PossibleTah, A::Error>
+where
+    A: SeqAccess<'de>,
+{
+    let tah = seq.next_element::<u8>()?.unwrap();
+    if is_sdacl_byte(tah) {
+        Ok(PossibleTah {
+            type_addr: consume_type_attr(seq, tah)?,
+            tah,
+            is_tah: true,
+        })
+    } else {
+        Ok(PossibleTah {
+            type_addr: 0,
+            tah,
+            is_tah: false,
+        })
+    }
 }
 
 pub fn consume_sdacl<'de, A>(seq: &mut A) -> Result<PossibleSdacl, A::Error>
@@ -279,13 +433,13 @@ where
         Ok(PossibleSdacl {
             type_addr: consume_type_attr(seq, sdacl)?,
             sdacl,
-            is_sdacl: false,
+            is_sdacl: true,
         })
     } else {
         Ok(PossibleSdacl {
             type_addr: 0,
             sdacl,
-            is_sdacl: true,
+            is_sdacl: false,
         })
     }
 }
@@ -300,69 +454,249 @@ pub fn is_tah_byte(really: u8) -> bool {
 
 gen_parser!(parse <PointerType> visit PointerVisitor, |seq|<PointerType>, [], []);
 gen_parser!(parse <FunctionType> visit FunctionVisitor, |seq|<FunctionType>, [], []);
-gen_parser!(parse <ArrayType> visit ArrayVisitor, |seq|<ArrayType>, [], []);
-gen_parser!(parse <TypedefType> visit TypedefVisitor, |seq|<TypedefType>, [], []);
-gen_parser!(parse <UnionType> visit UnionVisitor, |seq|<UnionType>, [], []);
+gen_parser!(
+    parse <ArrayType> visit ArrayVisitor,
+    |seq|<ArrayType>,
+    [
+        elem_num,
+        base
+    ],
+    [
+        (elem_num => consume_one_or_two_bytes(&mut seq)),
+        (base => . {
+            let _ = consume_tah(&mut seq);
+            Box::new(create_type_info(&mut seq)?)
+        })
+    ]
+);
+gen_parser!(
+    parse <TypedefType> visit TypedefVisitor,
+    |seq|<TypedefType>,
+    [
+        buf
+    ],
+    [
+        (buf => . {
+            let len = consume_one_or_two_bytes(&mut seq)?;
+            (0..len)
+            .map(|_| seq.next_element::<u8>().unwrap().unwrap())
+            .collect::<Vec<u8>>()
+        })
+    ]
+);
+
+gen_parser!(
+    parse <UnionType> visit UnionVisitor,
+    |seq|<UnionType>,
+    [
+        n,
+        is_ref,
+        type_ref,
+        ref_taudt,
+        effective_alignment,
+        taudt_bits,
+        members
+    ],
+    [
+        (n => . {
+            let dt = consume_one_or_two_bytes(&mut seq)?;
+            if dt == 0 {
+                panic!("Unhandled ref");
+                //dt
+            } else if dt == 0x7FFE {
+                panic!("Unhandled dt");
+            } else {
+                dt
+            }
+        }),
+        (is_ref => . {
+            n == 0
+        }),
+        (type_ref => . {
+            if is_ref {
+                panic!("Unhandled ref");
+            } else {
+                None
+            }
+        }),
+        (ref_taudt => . {
+            if is_ref {
+                panic!("Unhandled ref");
+            } else {
+                None
+            }
+        }),
+        (effective_alignment => . {
+            if is_ref {
+                None
+            } else {
+                let alpow = n & 7;
+                if alpow == 0 {
+                    Some(0)
+                } else {
+                    Some(1 << (alpow - 1))
+                }
+            }
+        }),
+        (taudt_bits => . {
+            if is_ref {
+                None
+            } else {
+                Some(consume_sdacl(&mut seq)?)
+            }
+        }),
+        (members => . {
+            if is_ref {
+                None
+            } else {
+                let mem_cnt = n >> 3;
+                // println!("[N]-> {} | [MEM_CNT]-> {}",n,mem_cnt);
+                let mut term = consume_with_null_terminated(&mut seq)?;
+                if let Some(ref taudt_bits) = taudt_bits {
+                    if !taudt_bits.is_sdacl {
+                        term.insert(0, taudt_bits.sdacl);
+                    }
+                }
+                (0..2).for_each(|_| term.insert(0, 0));
+                term.insert(0, 0);
+                byteorder::NativeEndian::write_u16(&mut term[0..2], mem_cnt);
+                let xyz=bincode::deserialize::<TestTypesVec>(term.as_slice()).unwrap().types_vec;
+                (0..3).for_each(|_| {let _ = term.remove(0);});
+                Some(xyz)
+            }
+        })
+    ]
+);
+
 gen_parser!(parse <EnumType> visit EnumVisitor, |seq|<EnumType>, [], []);
-gen_parser!(parse <BitfieldType> visit BitfieldVisitor, |seq|<BitfieldType>, [], []);
+
+gen_parser!(
+    parse <BitfieldType> visit BitfieldVisitor,
+    |seq|<BitfieldType>,
+    [nbytes, dt, width, is_unsigned, tah],
+    [
+        (nbytes => . 0),
+        (dt => consume_one_or_two_bytes(&mut seq)),
+        (width => . dt >> 1),
+        (is_unsigned => . (dt & 1) == 1),
+        (tah => consume_tah(&mut seq))
+    ]
+);
 
 gen_parser!(
     parse <StructType> visit StructVisitor,
     |seq|<StructType>,
     [
         n,
+        is_ref,
+        type_ref,
+        ref_taudt,
         effective_alignment,
         taudt_bits,
         members
     ],
     [
-        (n => consume_one_or_two_bytes(&mut seq)),
-        (effective_alignment => . {
-            let alpow = n & 7;
-            if alpow == 0 {
-                0
+        (n => . {
+            let dt = consume_one_or_two_bytes(&mut seq)?;
+            if dt == 0 {
+                panic!("Unhandled ref");
+                //dt
+            } else if dt == 0x7FFE {
+                panic!("Unhandled dt");
             } else {
-                1 << (alpow - 1)
+                dt
             }
         }),
-        (taudt_bits => consume_sdacl(&mut seq)),
+        (is_ref => . {
+            n == 0
+        }),
+        (type_ref => . {
+            if is_ref {
+                panic!("Unhandled ref");
+            } else {
+                None
+            }
+        }),
+        (ref_taudt => . {
+            if is_ref {
+                panic!("Unhandled ref");
+            } else {
+                None
+            }
+        }),
+        (effective_alignment => . {
+            if is_ref {
+                None
+            } else {
+                let alpow = n & 7;
+                if alpow == 0 {
+                    Some(0)
+                } else {
+                    Some(1 << (alpow - 1))
+                }
+            }
+        }),
+        (taudt_bits => . {
+            if is_ref {
+                None
+            } else {
+                Some(consume_sdacl(&mut seq)?)
+            }
+        }),
         (members => . {
-            let mem_cnt = n >> 3;
-            let mut term = consume_null_terminated(&mut seq)?;
-            if taudt_bits.is_sdacl {
-                term.insert(0, taudt_bits.sdacl);
+            if is_ref {
+                None
+            } else {
+                let mem_cnt = n >> 3;
+                let mut term = consume_with_null_terminated(&mut seq)?;
+                if let Some(ref taudt_bits) = taudt_bits {
+                    if !taudt_bits.is_sdacl {
+                        term.insert(0, taudt_bits.sdacl);
+                    }
+                }
+                (0..2).for_each(|_| term.insert(0, 0));
+                byteorder::NativeEndian::write_u16(&mut term[0..2], mem_cnt);
+                term.insert(0, 1);
+                let xyz=bincode::deserialize::<TestTypesVec>(term.as_slice()).unwrap().types_vec;
+                (0..3).for_each(|_| {let _ = term.remove(0);});
+                Some(xyz)
             }
-            let mut vec=Vec::<StructMember>::new();
-            for _ in 0..mem_cnt {
-                println!("STARTING_TINFO_CREATION");
-                vec.push(StructMember{
-                    typ: create_type_info(&mut seq)?
-                });
-                consume_sdacl(&mut seq)?;
-            }
-            vec
         })
     ]
 );
 
 #[derive(Default, Debug)]
-pub struct UnionType {}
+pub struct UnionType {
+    n: u16,
+    is_ref: bool,
+    type_ref: Option<Box<Types>>,
+    ref_taudt: Option<PossibleSdacl>,
+    effective_alignment: Option<u16>,
+    taudt_bits: Option<PossibleSdacl>,
+    members: Option<Vec<Types>>,
+}
 #[derive(Default, Debug)]
 pub struct EnumType {}
 #[derive(Default, Debug)]
-pub struct BitfieldType {}
+pub struct BitfieldType {
+    nbytes: u8,
+    dt: u16,
+    width: u16,
+    is_unsigned: bool,
+    tah: PossibleTah,
+}
 
 #[derive(Debug)]
 pub enum Types {
     Unset,
     Pointer(Vec<u8>),
     Function(Vec<u8>),
-    Array(Vec<u8>),
-    Typedef(Vec<u8>),
-    Struct(Vec<u8>),
-    Union(Vec<u8>),
+    Array(ArrayType),
+    Typedef(TypedefType),
+    Struct(StructType),
+    Union(UnionType),
     Enum(Vec<u8>),
-    Bitfield(Vec<u8>),
+    Bitfield(BitfieldType),
     Unknown(Vec<u8>),
 }
 impl Default for Types {
