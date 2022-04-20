@@ -330,6 +330,9 @@ pub struct ArrayType {
 #[derive(Default, Debug)]
 pub struct TypedefType {
     buf: Vec<u8>,
+    is_ordref: bool,
+    ordinal: Option<u32>,
+    name: Option<String>,
 }
 
 #[derive(Default, Debug)]
@@ -356,13 +359,49 @@ where
     } else {
         Ok((val - 1) as u16)
     }
-    // let initial: u16 = seq.next_element()?.unwrap();
-    // let bytes = initial.to_le_bytes();
-    // if (bytes[0] & 0x7F) == 0 {
-    //     Ok(initial - 1)
-    // } else {
-    //     Ok((bytes[0] - 1) as u16)
-    // }
+}
+
+pub fn consume_one_to_four_bytes_vec(bytes: &Vec<u8>) -> u32 {
+    let mut index = 0;
+    let mut val: u32 = 0;
+    loop {
+        let mut hi = val << 6;
+        let mut b = bytes[index];
+        index += 1;
+        let mut sign = b & 0x80;
+        if sign == 0 {
+            let mut lo = b & 0x3F;
+            val = (lo as u32) | hi;
+            break;
+        } else {
+            let mut lo = 2 * hi;
+            hi = (b as u32) & 0x7F;
+            val = lo | hi;
+        }
+    }
+    return val;
+}
+
+pub fn consume_one_to_four_bytes<'de, A>(seq: &mut A) -> Result<u32, A::Error>
+where
+    A: SeqAccess<'de>,
+{
+    let mut val: u32 = 0;
+    loop {
+        let mut hi = val << 6;
+        let mut b = seq.next_element::<u8>()?.unwrap();
+        let mut sign = b & 0x80;
+        if sign == 0 {
+            let mut lo = b & 0x3F;
+            val = (lo as u32) | hi;
+            break;
+        } else {
+            let mut lo = 2 * hi;
+            hi = (b as u32) & 0x7F;
+            val = lo | hi;
+        }
+    }
+    return Ok(val);
 }
 
 pub fn consume_type_attr<'de, A>(seq: &mut A, tah: u8) -> Result<u16, A::Error>
@@ -525,7 +564,7 @@ gen_parser!(
     parse <TypedefType> visit TypedefVisitor,
     |seq|<TypedefType>,
     [
-        buf
+        buf, is_ordref, ordinal, name
     ],
     [
         (buf => . {
@@ -533,6 +572,23 @@ gen_parser!(
             (0..len)
             .map(|_| seq.next_element::<u8>().unwrap().unwrap())
             .collect::<Vec<u8>>()
+        }),
+        (is_ordref => . {
+            buf[0]=='#' as u8
+        }),
+        (ordinal => . {
+            if is_ordref{
+                Some(consume_one_to_four_bytes_vec(&buf))
+            }else{
+                None
+            }
+        }),
+        (name => . {
+            if !is_ordref{
+                Some(String::from_utf8_lossy(buf.as_slice()).to_string())
+            }else{
+                None
+            }
         })
     ]
 );
@@ -757,6 +813,7 @@ pub enum Types {
     Bitfield(BitfieldType),
     Unknown(Vec<u8>),
 }
+
 impl Default for Types {
     fn default() -> Self {
         Types::Unset

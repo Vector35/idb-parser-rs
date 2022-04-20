@@ -42,7 +42,7 @@ fn main() {
                     Types::Array(_) => {}
                     Types::Typedef(_) => {}
                     Types::Struct(str) => {
-                        println!("{:?}\n", str);
+                        println!("{:#x?}\n", str);
                     }
                     Types::Union(_) => {}
                     Types::Enum(_) => {}
