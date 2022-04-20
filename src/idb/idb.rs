@@ -117,7 +117,7 @@ impl IDB2 {
 
             for (index, offset) in offsets.into_iter().enumerate() {
                 match index {
-                    0 => idb.id0 = IDB2::deserialize_section(&bytes, offset),
+                    0 => idb.id0 = Ok(ID0Section::default()), //IDB2::deserialize_section(&bytes, offset)
                     1 => idb.id1 = IDB2::deserialize_section(&bytes, offset),
                     2 => idb.nam = IDB2::deserialize_section(&bytes, offset),
                     3 => idb.seg = IDB2::deserialize_section(&bytes, offset),

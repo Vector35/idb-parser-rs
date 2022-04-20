@@ -10,9 +10,6 @@ use std::borrow::BorrowMut;
 use std::default::Default;
 use std::ops::Deref;
 
-// 1300
-// 788
-
 #[bitflags]
 #[repr(u32)]
 #[derive(Deserialize, Debug, Copy, Clone, PartialEq)]
@@ -178,7 +175,7 @@ gen_parser!(
                     match sdacl {
                         Ok(sdacl) => {
                            if !sdacl.is_sdacl {
-                                types.push(create_type_info_test(&mut seq, TypeMetadata{flag:sdacl.sdacl}).unwrap());
+                                types.push(create_type_info_impl(&mut seq, TypeMetadata{flag:sdacl.sdacl}).unwrap());
                                 index+=1;
                             } else {
                             }
@@ -188,36 +185,6 @@ gen_parser!(
                 }
             }
             types
-
-            // let mut SHOULD_SDACL:(u8,bool) =(0,false);
-            // (0..mem_cnt).map(|_| {
-            //     // if sdacl fail , create_next_Tinfo using failed sdacl as it will just be
-            //     // equivalent to the following Type
-            //     // TODO: i was trying to finish this b4 5pm so code is gross , will fix tmrw
-            //     if SHOULD_SDACL.1{
-            //         create_type_info_test(&mut seq, TypeMetadata{flag:SHOULD_SDACL.0}).unwrap()
-            //     }else{
-            //         let x = create_type_info(&mut seq);
-            //         if should_sdacl == 1 {
-            //             let sdacl = consume_sdacl(&mut seq);
-            //             match sdacl {
-            //                 Ok(sdacl) => {
-            //                    if !sdacl.is_sdacl {
-            //                         SHOULD_SDACL=(sdacl.sdacl,true);
-            //                             x.unwrap()
-            //                     } else {
-            //                         x.unwrap()
-            //                     }
-            //                 },
-            //                 Err(_) => {
-            //                     x.unwrap()
-            //                 }
-            //             }
-            //         } else {
-            //             x.unwrap()
-            //         }
-            //     }
-            // }).collect()
         })
     ]
 );
@@ -233,7 +200,7 @@ gen_parser!(
     ]
 );
 
-pub fn create_type_info_test<'de, A>(seq: &mut A, typ: TypeMetadata) -> Result<Types, A::Error>
+pub fn create_type_info_impl<'de, A>(seq: &mut A, typ: TypeMetadata) -> Result<Types, A::Error>
 where
     A: SeqAccess<'de>,
 {
@@ -279,41 +246,7 @@ where
     A: SeqAccess<'de>,
 {
     let typ = seq.next_element::<TypeMetadata>()?.unwrap();
-    if typ.get_base_type_flag().is_typeid_last() || typ.get_base_type_flag().is_reserved() {
-        println!("!--UNSET!->{}", typ.flag);
-        Ok(Types::Unset)
-    } else {
-        if typ.get_base_type_flag().is_pointer() {
-            println!("  --POINTER!");
-            Ok(Types::Pointer(consume_null_terminated(seq)?))
-        } else if typ.get_base_type_flag().is_function() {
-            println!("  --FUNCTION!");
-            Ok(Types::Function(consume_null_terminated(seq)?))
-        } else if typ.get_base_type_flag().is_array() {
-            println!("  --ARRAY!");
-            Ok(Types::Array(seq.next_element()?.unwrap()))
-        } else if typ.get_full_type_flag().is_typedef() {
-            println!("  --TYPEDEF!");
-            Ok(Types::Typedef(seq.next_element()?.unwrap()))
-        } else if typ.get_full_type_flag().is_union() {
-            println!("--UNION!");
-            Ok(Types::Union(seq.next_element()?.unwrap()))
-        } else if typ.get_full_type_flag().is_struct() {
-            println!("--STRUCT!");
-            Ok(Types::Struct(seq.next_element()?.unwrap()))
-        } else if typ.get_full_type_flag().is_enum() {
-            println!("--ENUM!");
-            Ok(Types::Enum(consume_null_terminated(seq)?))
-        } else if typ.get_base_type_flag().is_bitfield() {
-            println!("  --BITFIELD!");
-            let mut bitfield: BitfieldType = seq.next_element()?.unwrap();
-            bitfield.nbytes = 1 << (typ.get_type_flag().flag >> 4);
-            Ok(Types::Bitfield(bitfield))
-        } else {
-            println!("--UNKNOWN!");
-            Ok(Types::Unknown(consume_null_terminated(seq)?))
-        }
-    }
+    create_type_info_impl(seq, typ)
 }
 
 #[derive(Default, Debug)]
@@ -661,7 +594,6 @@ gen_parser!(
                 None
             } else {
                 let mem_cnt = n >> 3;
-                // println!("[N]-> {} | [MEM_CNT]-> {}",n,mem_cnt);
                 let mut term = consume_with_null_terminated(&mut seq)?;
                 if let Some(ref taudt_bits) = taudt_bits {
                     if !taudt_bits.is_sdacl {

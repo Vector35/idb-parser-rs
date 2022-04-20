@@ -12,6 +12,7 @@ fn main() {
     println!("time to parse: {:?}", now.elapsed());
     println!("{:?}", idb);
 
+    // id0 removed for now to speed up parse testing .
     // for page in idb.id0.unwrap().pages {
     //     if let Some(page) = page {
     //         println!("{:?}", page);
