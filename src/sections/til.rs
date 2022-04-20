@@ -162,39 +162,62 @@ gen_parser!(
         should_sdacl,
         mem_cnt,
         (types_vec => . {
-            for _ in 0..mem_cnt {
-
-            }
-
-            let mut SHOULD_SDACL:(u8,bool) =(0,false);
-            (0..mem_cnt).map(|_| {
-                // if sdacl fail , create_next_Tinfo using failed sdacl as it will just be
-                // equivalent to the following Type
-                // TODO: i was trying to finish this b4 5pm so code is gross , will fix tmrw
-                if SHOULD_SDACL.1{
-                    create_type_info_test(&mut seq, TypeMetadata{flag:SHOULD_SDACL.0}).unwrap()
-                }else{
-                    let x = create_type_info(&mut seq);
-                    if should_sdacl == 1 {
-                        let sdacl = consume_sdacl(&mut seq);
-                        match sdacl {
-                            Ok(sdacl) => {
-                               if !sdacl.is_sdacl {
-                                    SHOULD_SDACL=(sdacl.sdacl,true);
-                                        x.unwrap()
-                                } else {
-                                    x.unwrap()
-                                }
-                            },
-                            Err(_) => {
-                                x.unwrap()
+            let mut types:Vec<Types>=Vec::new();
+            let mut index=0;
+            while index<mem_cnt{
+                let x = create_type_info(&mut seq);
+                match x{
+                    Ok(ok)=>{
+                        types.push(ok);
+                    },
+                    Err(_)=>{}
+                }
+                index+=1;
+                if should_sdacl==1{
+                    let sdacl=consume_sdacl(&mut seq);
+                    match sdacl {
+                        Ok(sdacl) => {
+                           if !sdacl.is_sdacl {
+                                types.push(create_type_info_test(&mut seq, TypeMetadata{flag:sdacl.sdacl}).unwrap());
+                                index+=1;
+                            } else {
                             }
-                        }
-                    } else {
-                        x.unwrap()
+                        },
+                        Err(_) => {}
                     }
                 }
-            }).collect()
+            }
+            types
+
+            // let mut SHOULD_SDACL:(u8,bool) =(0,false);
+            // (0..mem_cnt).map(|_| {
+            //     // if sdacl fail , create_next_Tinfo using failed sdacl as it will just be
+            //     // equivalent to the following Type
+            //     // TODO: i was trying to finish this b4 5pm so code is gross , will fix tmrw
+            //     if SHOULD_SDACL.1{
+            //         create_type_info_test(&mut seq, TypeMetadata{flag:SHOULD_SDACL.0}).unwrap()
+            //     }else{
+            //         let x = create_type_info(&mut seq);
+            //         if should_sdacl == 1 {
+            //             let sdacl = consume_sdacl(&mut seq);
+            //             match sdacl {
+            //                 Ok(sdacl) => {
+            //                    if !sdacl.is_sdacl {
+            //                         SHOULD_SDACL=(sdacl.sdacl,true);
+            //                             x.unwrap()
+            //                     } else {
+            //                         x.unwrap()
+            //                     }
+            //                 },
+            //                 Err(_) => {
+            //                     x.unwrap()
+            //                 }
+            //             }
+            //         } else {
+            //             x.unwrap()
+            //         }
+            //     }
+            // }).collect()
         })
     ]
 );
@@ -452,6 +475,35 @@ pub fn is_tah_byte(really: u8) -> bool {
     really == 0xFE
 }
 
+pub fn serialize_dt(n: u16) -> Vec<u8> {
+    if n > 0x7FFE {
+        panic!("invalid dt");
+    }
+    let mut lo = n + 1;
+    let mut hi = n + 1;
+    let mut result: Vec<u8> = Vec::new();
+    if lo > 127 {
+        result.push((lo & 0x7F | 0x80) as u8);
+        hi = (lo >> 7) & 0xFF;
+    }
+    result.push(hi as u8);
+    result
+}
+
+pub fn create_ref(vec: Vec<u8>) -> Option<Box<Types>> {
+    let mut vec = vec;
+    if vec[0] != '=' as u8 {
+        let mut ser = serialize_dt(vec.len() as u16);
+        vec.splice(..0, ser.drain(..));
+        vec.insert(0, '=' as u8);
+    }
+
+    match bincode::deserialize::<TestTypes>(vec.as_slice()) {
+        Ok(ok) => Some(Box::new(ok.types)),
+        Err(_) => None,
+    }
+}
+
 gen_parser!(parse <PointerType> visit PointerVisitor, |seq|<PointerType>, [], []);
 gen_parser!(parse <FunctionType> visit FunctionVisitor, |seq|<FunctionType>, [], []);
 gen_parser!(
@@ -501,8 +553,7 @@ gen_parser!(
         (n => . {
             let dt = consume_one_or_two_bytes(&mut seq)?;
             if dt == 0 {
-                panic!("Unhandled ref");
-                //dt
+                dt
             } else if dt == 0x7FFE {
                 panic!("Unhandled dt");
             } else {
@@ -514,14 +565,18 @@ gen_parser!(
         }),
         (type_ref => . {
             if is_ref {
-                panic!("Unhandled ref");
+                let len = consume_one_or_two_bytes(&mut seq)?;
+                let buf = (0..len)
+                    .map(|_| seq.next_element::<u8>().unwrap().unwrap())
+                    .collect::<Vec<u8>>();
+                create_ref(buf)
             } else {
                 None
             }
         }),
         (ref_taudt => . {
             if is_ref {
-                panic!("Unhandled ref");
+                Some(consume_sdacl(&mut seq)?)
             } else {
                 None
             }
@@ -599,8 +654,7 @@ gen_parser!(
         (n => . {
             let dt = consume_one_or_two_bytes(&mut seq)?;
             if dt == 0 {
-                panic!("Unhandled ref");
-                //dt
+                dt
             } else if dt == 0x7FFE {
                 panic!("Unhandled dt");
             } else {
@@ -612,14 +666,18 @@ gen_parser!(
         }),
         (type_ref => . {
             if is_ref {
-                panic!("Unhandled ref");
+                let len = consume_one_or_two_bytes(&mut seq)?;
+                let buf = (0..len)
+                    .map(|_| seq.next_element::<u8>().unwrap().unwrap())
+                    .collect::<Vec<u8>>();
+                create_ref(buf)
             } else {
                 None
             }
         }),
         (ref_taudt => . {
             if is_ref {
-                panic!("Unhandled ref");
+                Some(consume_sdacl(&mut seq)?)
             } else {
                 None
             }
