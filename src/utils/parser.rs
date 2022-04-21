@@ -155,6 +155,5 @@ pub fn parse_len_prefix_str_vec(vec: &Vec<u8>) -> Vec<String> {
         fields.push(String::from_utf8_lossy(&vec[pos + 1..pos + len as usize]).to_string());
         pos += len as usize;
     }
-    println!("fields->{:?}", fields);
     fields
 }

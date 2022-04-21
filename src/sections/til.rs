@@ -68,28 +68,26 @@ pub struct TypeMetadata {
     pub flag: u8,
 }
 
+impl TypeFlag {
+    pub fn is_unsigned(&self) -> bool {
+        self.flag == 0x20
+    }
+}
+
 impl TypeMetadata {
-    pub fn get_underlying_typeinfo(&self, typedef: &TypedefType, bucket: TILBucket) -> Types {
+    pub fn get_underlying_typeinfo(&self, typedef: &TypedefType, bucket: TILBucket) -> TILTypeInfo {
         if typedef.is_ordref {
             bucket
                 .type_info
                 .into_iter()
                 .find(|x| x.ordinal == typedef.ordinal.unwrap() as u64)
                 .unwrap()
-                .info
-                .unwrap()
-                .types
-                .clone()
         } else {
             bucket
                 .type_info
                 .into_iter()
                 .find(|x| x.name == *typedef.name.as_ref().unwrap())
                 .unwrap()
-                .info
-                .unwrap()
-                .types
-                .clone()
         }
     }
 
@@ -228,12 +226,11 @@ where
     A: SeqAccess<'de>,
 {
     if typ.get_base_type_flag().is_typeid_last() || typ.get_base_type_flag().is_reserved() {
-        println!("!--UNSET!->{}", typ.flag);
         Ok(Types::Unset)
     } else {
         if typ.get_base_type_flag().is_pointer() {
             println!("  --POINTER!");
-            Ok(Types::Pointer(typ, consume_null_terminated(seq)?))
+            Ok(Types::Pointer(typ, seq.next_element()?.unwrap()))
         } else if typ.get_base_type_flag().is_function() {
             println!("  --FUNCTION!");
             Ok(Types::Function(typ, consume_null_terminated(seq)?))
@@ -273,7 +270,10 @@ where
 }
 
 #[derive(Default, Debug, Clone)]
-pub struct PointerType {}
+pub struct PointerType {
+    tah: PossibleTah,
+    typ: Box<Types>,
+}
 #[derive(Default, Debug, Clone)]
 pub struct FunctionType {}
 
@@ -427,7 +427,7 @@ where
     A: SeqAccess<'de>,
 {
     let tah = seq.next_element::<u8>()?.unwrap();
-    if is_sdacl_byte(tah) {
+    if is_tah_byte(tah) {
         Ok(PossibleTah {
             type_addr: consume_type_attr(seq, tah)?,
             tah,
@@ -499,8 +499,24 @@ pub fn create_ref(vec: Vec<u8>) -> Option<Box<Types>> {
     }
 }
 
-gen_parser!(parse <PointerType> visit PointerVisitor, |seq|<PointerType>, [], []);
+gen_parser!(
+    parse <PointerType> visit PointerVisitor,
+    |seq|<PointerType>,
+    [tah, typ],
+    [
+        (tah => consume_tah(&mut seq)),
+        (typ => . {
+            if !tah.is_tah {
+                Box::new(create_type_info_impl(&mut seq, TypeMetadata{flag: tah.tah}).unwrap())
+            } else {
+                Box::new(create_type_info(&mut seq)?)
+            }
+        })
+    ]
+);
+
 gen_parser!(parse <FunctionType> visit FunctionVisitor, |seq|<FunctionType>, [], []);
+
 gen_parser!(
     parse <ArrayType> visit ArrayVisitor,
     |seq|<ArrayType>,
@@ -511,11 +527,16 @@ gen_parser!(
     [
         (elem_num => consume_one_or_two_bytes(&mut seq)),
         (base => . {
-            let _ = consume_tah(&mut seq);
-            Box::new(create_type_info(&mut seq)?)
+            let tah = consume_tah(&mut seq)?;
+            if !tah.is_tah {
+                Box::new(create_type_info_impl(&mut seq, TypeMetadata{flag: tah.tah}).unwrap())
+            } else {
+                Box::new(create_type_info(&mut seq)?)
+            }
         })
     ]
 );
+
 gen_parser!(
     parse <TypedefType> visit TypedefVisitor,
     |seq|<TypedefType>,
@@ -758,7 +779,7 @@ pub struct BitfieldType {
 #[derive(Debug, Clone)]
 pub enum Types {
     Unset,
-    Pointer(TypeMetadata, Vec<u8>),
+    Pointer(TypeMetadata, PointerType),
     Function(TypeMetadata, Vec<u8>),
     Array(TypeMetadata, ArrayType),
     Typedef(TypeMetadata, TypedefType),
@@ -786,6 +807,91 @@ pub struct TILTypeInfo {
     pub fieldcmts: Vec<u8>,
     pub sclass: u8,
     pub fields: Vec<String>,
+}
+
+impl TILTypeInfo {
+    pub fn get_type_name(&self) -> String {
+        let ty = &self.info.as_ref().unwrap().types;
+        if matches!(ty, Types::Unset) {
+            String::from("")
+        } else {
+            let mut tstr = String::new();
+            let flags = match ty {
+                Types::Pointer(mdata, _)
+                | Types::Function(mdata, _)
+                | Types::Array(mdata, _)
+                | Types::Typedef(mdata, _)
+                | Types::Struct(mdata, _)
+                | Types::Union(mdata, _)
+                | Types::Enum(mdata, _)
+                | Types::Bitfield(mdata, _)
+                | Types::Unknown(mdata, _) => Some(mdata),
+                _ => None,
+            }
+            .unwrap();
+
+            let base = flags.get_base_type_flag();
+            let tflag = flags.get_type_flag();
+
+            if base.is_typeid_last() {
+                match base.flag {
+                    0x00 => tstr += "unknown",
+                    0x01 => tstr += "void",
+                    0x02 => tstr += "int8_t",
+                    0x03 => tstr += "int16_t",
+                    0x04 => tstr += "int32_t",
+                    0x05 => tstr += "int64_t",
+                    0x06 => tstr += "int128_t",
+                    0x07 => tstr += "int",
+                    0x08 => tstr += "bool",
+                    0x09 => match tflag.flag {
+                        0x00 => tstr += "float",
+                        0x10 => tstr += "double",
+                        0x20 => tstr += "long double",
+                        0x30 => tstr += "special float",
+                        _ => tstr += "unknown float",
+                    },
+                    _ => {}
+                }
+            } else {
+                match ty {
+                    Types::Unset => {}
+                    Types::Pointer(mdata, ptr) => {
+                        // let ptd = ptr.typ.as_ref();
+                        // tstr += format!(
+                        //     "{}",
+                        //     TILTypeInfo {
+                        //         info: Some(TestTypes { types: ptd.clone() }),
+                        //         ..Default::default()
+                        //     }
+                        //     .get_type_name()
+                        // )
+                        // .as_str();
+                    }
+                    Types::Function(_, _) => {}
+                    Types::Array(_, _) => {}
+                    Types::Typedef(_, _) => {}
+                    Types::Struct(mdata, str) => {
+                        if str.is_ref {
+                            if let Types::Typedef(md, td) = str.type_ref.as_ref().unwrap().as_ref()
+                            {
+                                panic!("unhandled ref");
+                            } else {
+                                panic!("shouldnt occur");
+                            }
+                        } else {
+                            tstr += self.name.as_ref()
+                        }
+                    }
+                    Types::Union(_, _) => {}
+                    Types::Enum(_, _) => {}
+                    Types::Bitfield(_, _) => {}
+                    Types::Unknown(_, _) => {}
+                }
+            }
+            tstr
+        }
+    }
 }
 
 #[derive(Default, Debug, Clone)]
@@ -845,7 +951,7 @@ gen_parser!(
             let nt = consume_with_null_terminated(&mut seq)?;
             match bincode::deserialize::<TestTypes>(nt.as_slice()) {
                 Ok(ok) => Some(ok),
-                Err(err) => None
+                Err(_) => None
             }
         }),
         (cmt => consume_null_terminated_string(&mut seq)),

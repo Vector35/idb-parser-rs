@@ -28,12 +28,25 @@ fn main() {
         _ => {}
     }
 
+    let str = match &idb.til.as_ref().unwrap().types {
+        TILBucketType::Default(Some(bucket)) => Some(
+            bucket
+                .type_info
+                .iter()
+                .find(|x| x.name == "String")
+                .unwrap()
+                .get_type_name(),
+        ),
+        _ => None,
+    };
+    println!("String - Typename: \n{}", str.unwrap());
+
     match &idb.til.as_ref().unwrap().types {
         TILBucketType::Default(Some(bucket)) => {
             match &bucket
                 .type_info
                 .iter()
-                .find(|x| x.name == "mach_header_64")
+                .find(|x| x.name == "String")
                 .unwrap()
                 .info
             {
@@ -50,18 +63,6 @@ fn main() {
                     }
                     Types::Struct(_, str) => {
                         println!("{:#x?}\n", str);
-                        if !str.is_ref {
-                            str.members.as_ref().unwrap().iter().for_each(|x| match x {
-                                Types::Typedef(mdata, tdef) => {
-                                    println!(
-                                        "tdef: {:#x?} -> {:#x?}",
-                                        tdef,
-                                        mdata.get_underlying_typeinfo(&tdef, bucket.clone())
-                                    )
-                                }
-                                _ => {}
-                            });
-                        }
                     }
                     Types::Union(_, _) => {}
                     Types::Enum(_, _) => {}
