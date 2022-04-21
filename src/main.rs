@@ -38,17 +38,35 @@ fn main() {
                 .info
             {
                 Some(typ) => match &typ.types {
-                    Types::Pointer(_) => {}
-                    Types::Function(_) => {}
-                    Types::Array(_) => {}
-                    Types::Typedef(_) => {}
-                    Types::Struct(str) => {
-                        println!("{:#x?}\n", str);
+                    Types::Pointer(_, _) => {}
+                    Types::Function(_, _) => {}
+                    Types::Array(_, _) => {}
+                    Types::Typedef(mdata, tdef) => {
+                        println!(
+                            "tdef: {:#x?} -> {:#x?}",
+                            tdef,
+                            mdata.get_underlying_typeinfo(&tdef, bucket.clone())
+                        )
                     }
-                    Types::Union(_) => {}
-                    Types::Enum(_) => {}
-                    Types::Bitfield(_) => {}
-                    Types::Unknown(_) => {}
+                    Types::Struct(_, str) => {
+                        println!("{:#x?}\n", str);
+                        if !str.is_ref {
+                            str.members.as_ref().unwrap().iter().for_each(|x| match x {
+                                Types::Typedef(mdata, tdef) => {
+                                    println!(
+                                        "tdef: {:#x?} -> {:#x?}",
+                                        tdef,
+                                        mdata.get_underlying_typeinfo(&tdef, bucket.clone())
+                                    )
+                                }
+                                _ => {}
+                            });
+                        }
+                    }
+                    Types::Union(_, _) => {}
+                    Types::Enum(_, _) => {}
+                    Types::Bitfield(_, _) => {}
+                    Types::Unknown(_, _) => {}
                     _ => {}
                 },
                 None => {}

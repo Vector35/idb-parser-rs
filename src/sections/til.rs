@@ -6,7 +6,7 @@ use derivative::Derivative;
 use enumflags2::{bitflags, BitFlags};
 use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
-use std::borrow::BorrowMut;
+use std::borrow::{Borrow, BorrowMut};
 use std::default::Default;
 use std::ops::Deref;
 
@@ -63,12 +63,36 @@ pub struct TypeFlag {
     pub flag: u8,
 }
 
-#[derive(Deserialize, Default, Debug)]
+#[derive(Deserialize, Copy, Clone, Default, Debug)]
 pub struct TypeMetadata {
     pub flag: u8,
 }
 
 impl TypeMetadata {
+    pub fn get_underlying_typeinfo(&self, typedef: &TypedefType, bucket: TILBucket) -> Types {
+        if typedef.is_ordref {
+            bucket
+                .type_info
+                .into_iter()
+                .find(|x| x.ordinal == typedef.ordinal.unwrap() as u64)
+                .unwrap()
+                .info
+                .unwrap()
+                .types
+                .clone()
+        } else {
+            bucket
+                .type_info
+                .into_iter()
+                .find(|x| x.name == *typedef.name.as_ref().unwrap())
+                .unwrap()
+                .info
+                .unwrap()
+                .types
+                .clone()
+        }
+    }
+
     pub fn get_base_type_flag(&self) -> BaseTypeFlag {
         BaseTypeFlag {
             flag: self.flag & 0x0F,
@@ -136,7 +160,7 @@ impl FullTypeFlag {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct TestTypes {
     pub types: Types,
 }
@@ -177,7 +201,6 @@ gen_parser!(
                            if !sdacl.is_sdacl {
                                 types.push(create_type_info_impl(&mut seq, TypeMetadata{flag:sdacl.sdacl}).unwrap());
                                 index+=1;
-                            } else {
                             }
                         },
                         Err(_) => {}
@@ -210,33 +233,33 @@ where
     } else {
         if typ.get_base_type_flag().is_pointer() {
             println!("  --POINTER!");
-            Ok(Types::Pointer(consume_null_terminated(seq)?))
+            Ok(Types::Pointer(typ, consume_null_terminated(seq)?))
         } else if typ.get_base_type_flag().is_function() {
             println!("  --FUNCTION!");
-            Ok(Types::Function(consume_null_terminated(seq)?))
+            Ok(Types::Function(typ, consume_null_terminated(seq)?))
         } else if typ.get_base_type_flag().is_array() {
             println!("  --ARRAY!");
-            Ok(Types::Array(seq.next_element()?.unwrap()))
+            Ok(Types::Array(typ, seq.next_element()?.unwrap()))
         } else if typ.get_full_type_flag().is_typedef() {
             println!("  --TYPEDEF!");
-            Ok(Types::Typedef(seq.next_element()?.unwrap()))
+            Ok(Types::Typedef(typ, seq.next_element()?.unwrap()))
         } else if typ.get_full_type_flag().is_union() {
             println!("--UNION!");
-            Ok(Types::Union(seq.next_element()?.unwrap()))
+            Ok(Types::Union(typ, seq.next_element()?.unwrap()))
         } else if typ.get_full_type_flag().is_struct() {
             println!("--STRUCT!");
-            Ok(Types::Struct(seq.next_element()?.unwrap()))
+            Ok(Types::Struct(typ, seq.next_element()?.unwrap()))
         } else if typ.get_full_type_flag().is_enum() {
             println!("--ENUM!");
-            Ok(Types::Enum(consume_null_terminated(seq)?))
+            Ok(Types::Enum(typ, consume_null_terminated(seq)?))
         } else if typ.get_base_type_flag().is_bitfield() {
             println!("  --BITFIELD!");
             let mut bitfield: BitfieldType = seq.next_element()?.unwrap();
             bitfield.nbytes = 1 << (typ.get_type_flag().flag >> 4);
-            Ok(Types::Bitfield(bitfield))
+            Ok(Types::Bitfield(typ, bitfield))
         } else {
             println!("--UNKNOWN!");
-            Ok(Types::Unknown(consume_null_terminated(seq)?))
+            Ok(Types::Unknown(typ, consume_null_terminated(seq)?))
         }
     }
 }
@@ -249,18 +272,18 @@ where
     create_type_info_impl(seq, typ)
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct PointerType {}
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct FunctionType {}
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct ArrayType {
     elem_num: u16,
     base: Box<Types>,
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct TypedefType {
     buf: Vec<u8>,
     is_ordref: bool,
@@ -268,15 +291,15 @@ pub struct TypedefType {
     name: Option<String>,
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct StructType {
     n: u16,
-    is_ref: bool,
+    pub is_ref: bool,
     type_ref: Option<Box<Types>>,
     ref_taudt: Option<PossibleSdacl>,
     effective_alignment: Option<u16>,
     taudt_bits: Option<PossibleSdacl>,
-    members: Option<Vec<Types>>,
+    pub members: Option<Vec<Types>>,
 }
 
 // this isnt named very well ( fix later lol )
@@ -299,7 +322,7 @@ pub fn consume_one_to_four_bytes_vec(bytes: &Vec<u8>) -> u32 {
     let mut val: u32 = 0;
     loop {
         let mut hi = val << 6;
-        let mut b = bytes[index];
+        let mut b = bytes[index + 1];
         index += 1;
         let mut sign = b & 0x80;
         if sign == 0 {
@@ -380,14 +403,14 @@ where
     return Ok(val as u16);
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct PossibleSdacl {
     type_addr: u16,
     sdacl: u8,
     is_sdacl: bool,
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct PossibleTah {
     type_addr: u16,
     tah: u8,
@@ -711,7 +734,7 @@ gen_parser!(
     ]
 );
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct UnionType {
     n: u16,
     is_ref: bool,
@@ -721,9 +744,9 @@ pub struct UnionType {
     taudt_bits: Option<PossibleSdacl>,
     members: Option<Vec<Types>>,
 }
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct EnumType {}
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct BitfieldType {
     nbytes: u8,
     dt: u16,
@@ -732,18 +755,18 @@ pub struct BitfieldType {
     tah: PossibleTah,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Types {
     Unset,
-    Pointer(Vec<u8>),
-    Function(Vec<u8>),
-    Array(ArrayType),
-    Typedef(TypedefType),
-    Struct(StructType),
-    Union(UnionType),
-    Enum(Vec<u8>),
-    Bitfield(BitfieldType),
-    Unknown(Vec<u8>),
+    Pointer(TypeMetadata, Vec<u8>),
+    Function(TypeMetadata, Vec<u8>),
+    Array(TypeMetadata, ArrayType),
+    Typedef(TypeMetadata, TypedefType),
+    Struct(TypeMetadata, StructType),
+    Union(TypeMetadata, UnionType),
+    Enum(TypeMetadata, Vec<u8>),
+    Bitfield(TypeMetadata, BitfieldType),
+    Unknown(TypeMetadata, Vec<u8>),
 }
 
 impl Default for Types {
@@ -752,7 +775,7 @@ impl Default for Types {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct TILTypeInfo {
     pub flags: u32,
     pub name: String,
@@ -765,7 +788,7 @@ pub struct TILTypeInfo {
     pub fields: Vec<String>,
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct TILBucket {
     pub ndefs: u32,
     pub len: u32,
@@ -822,7 +845,7 @@ gen_parser!(
             let nt = consume_with_null_terminated(&mut seq)?;
             match bincode::deserialize::<TestTypes>(nt.as_slice()) {
                 Ok(ok) => Some(ok),
-                Err(_) => None
+                Err(err) => None
             }
         }),
         (cmt => consume_null_terminated_string(&mut seq)),
