@@ -8,6 +8,7 @@ use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::borrow::{Borrow, BorrowMut};
 use std::default::Default;
+use std::fs::Metadata;
 use std::ops::Deref;
 
 #[bitflags]
@@ -63,7 +64,7 @@ pub struct TypeFlag {
     pub flag: u8,
 }
 
-#[derive(Deserialize, Copy, Clone, Default, Debug)]
+#[derive(PartialEq, Deserialize, Copy, Clone, Default, Debug)]
 pub struct TypeMetadata {
     pub flag: u8,
 }
@@ -226,7 +227,7 @@ where
     A: SeqAccess<'de>,
 {
     if typ.get_base_type_flag().is_typeid_last() || typ.get_base_type_flag().is_reserved() {
-        Ok(Types::Unset)
+        Ok(Types::Unset(typ))
     } else {
         if typ.get_base_type_flag().is_pointer() {
             println!("  --POINTER!");
@@ -269,21 +270,21 @@ where
     create_type_info_impl(seq, typ)
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(PartialEq, Default, Debug, Clone)]
 pub struct PointerType {
     tah: PossibleTah,
     typ: Box<Types>,
 }
-#[derive(Default, Debug, Clone)]
+#[derive(PartialEq, Default, Debug, Clone)]
 pub struct FunctionType {}
 
-#[derive(Default, Debug, Clone)]
+#[derive(PartialEq, Default, Debug, Clone)]
 pub struct ArrayType {
     elem_num: u16,
     base: Box<Types>,
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(PartialEq, Default, Debug, Clone)]
 pub struct TypedefType {
     buf: Vec<u8>,
     is_ordref: bool,
@@ -291,7 +292,7 @@ pub struct TypedefType {
     name: Option<String>,
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(PartialEq, Default, Debug, Clone)]
 pub struct StructType {
     n: u16,
     pub is_ref: bool,
@@ -403,21 +404,21 @@ where
     return Ok(val as u16);
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(PartialEq, Default, Debug, Clone)]
 pub struct PossibleSdacl {
     type_addr: u16,
     sdacl: u8,
     is_sdacl: bool,
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(PartialEq, Default, Debug, Clone)]
 pub struct PossibleTah {
     type_addr: u16,
     tah: u8,
     is_tah: bool,
 }
 
-#[derive(Default, Debug)]
+#[derive(PartialEq, Default, Debug)]
 pub struct StructMember {
     typ: Types,
 }
@@ -755,7 +756,7 @@ gen_parser!(
     ]
 );
 
-#[derive(Default, Debug, Clone)]
+#[derive(PartialEq, Default, Debug, Clone)]
 pub struct UnionType {
     n: u16,
     is_ref: bool,
@@ -765,9 +766,9 @@ pub struct UnionType {
     taudt_bits: Option<PossibleSdacl>,
     members: Option<Vec<Types>>,
 }
-#[derive(Default, Debug, Clone)]
+#[derive(PartialEq, Default, Debug, Clone)]
 pub struct EnumType {}
-#[derive(Default, Debug, Clone)]
+#[derive(PartialEq, Default, Debug, Clone)]
 pub struct BitfieldType {
     nbytes: u8,
     dt: u16,
@@ -776,9 +777,9 @@ pub struct BitfieldType {
     tah: PossibleTah,
 }
 
-#[derive(Debug, Clone)]
+#[derive(PartialEq, Debug, Clone)]
 pub enum Types {
-    Unset,
+    Unset(TypeMetadata),
     Pointer(TypeMetadata, PointerType),
     Function(TypeMetadata, Vec<u8>),
     Array(TypeMetadata, ArrayType),
@@ -792,7 +793,7 @@ pub enum Types {
 
 impl Default for Types {
     fn default() -> Self {
-        Types::Unset
+        Types::Unset(TypeMetadata::default())
     }
 }
 
@@ -809,10 +810,278 @@ pub struct TILTypeInfo {
     pub fields: Vec<String>,
 }
 
+#[derive(Debug)]
+pub struct TILType<'a> {
+    pub sec: &'a TILSection,
+    pub tinfo: TILTypeInfo,
+    pub typ: Option<Types>,
+    pub metadata: Option<TypeMetadata>,
+}
+
+// keep tinfo
+// point to type -> new object
+// store new metadata
+// ???
+// profit
+
+impl<'a> TILType<'a> {
+    pub fn convert_to_til_type(&self, typ: &Types, metadata: &TypeMetadata) -> TILType {
+        TILType {
+            sec: self.sec,
+            tinfo: self.tinfo.clone(),
+            typ: Some(typ.clone()),
+            metadata: Some(metadata.clone()),
+        }
+    }
+
+    pub fn locate_til_type(&self, typ: &Types) -> Option<TILType> {
+        println!("all_types:{:#x?}", self.sec.get_types().unwrap());
+        self.sec
+            .get_types()
+            .unwrap()
+            .into_iter()
+            .find(|x| x.typ.as_ref().unwrap().eq(typ))
+    }
+
+    pub fn get_type_decl(&self) -> String {
+        let mut tstr = String::new();
+
+        match self.typ.as_ref().unwrap() {
+            Types::Unset(_) => {}
+            Types::Pointer(_, _) => {}
+            Types::Function(_, _) => {}
+            Types::Array(_, _) => {}
+            Types::Typedef(_, _) => {}
+            Types::Struct(_, str) => {
+                tstr += "struct ";
+                tstr += &self.get_type_name();
+            }
+            Types::Union(_, _) => {}
+            Types::Enum(_, _) => {}
+            Types::Bitfield(_, _) => {}
+            Types::Unknown(_, _) => {}
+        }
+
+        tstr
+    }
+
+    pub fn get_type_str(&self) -> String {
+        let mut tstr = self.get_type_decl();
+
+        match self.typ.as_ref().unwrap() {
+            Types::Unset(_) => {}
+            Types::Pointer(_, _) => {}
+            Types::Function(_, _) => {}
+            Types::Array(_, _) => {}
+            Types::Typedef(_, _) => {}
+            Types::Struct(_, str) => {
+                let mem = str.members.as_ref().unwrap();
+                tstr += " {\n";
+                let mut index = 0;
+                for m in mem {
+                    let tiltype = match self.locate_til_type(m) {
+                        None => self.convert_to_til_type(m, m.get_metadata().unwrap()),
+                        Some(sm) => sm,
+                    };
+                    println!("LESGO:{:#x?}", tiltype);
+                    tstr += format!(
+                        "   {} {};\n",
+                        tiltype.get_type_name(),
+                        tiltype.tinfo.fields[index]
+                    )
+                    .as_str();
+                    index += 1;
+                }
+                tstr += "}\n";
+            }
+            Types::Union(_, _) => {}
+            Types::Enum(_, _) => {}
+            Types::Bitfield(_, _) => {}
+            Types::Unknown(_, _) => {}
+        }
+
+        tstr
+    }
+
+    pub fn get_type_name(&self) -> String {
+        if let Types::Unset(mdata) = self.typ.as_ref().unwrap() {
+            let mut tstr = String::new();
+            let base = mdata.get_base_type_flag();
+            let tflag = mdata.get_type_flag();
+
+            if base.is_typeid_last() {
+                match base.flag {
+                    0x00 => tstr += "unknown",
+                    0x01 => tstr += "void",
+                    0x02 => tstr += "int8_t",
+                    0x03 => tstr += "int16_t",
+                    0x04 => tstr += "int32_t",
+                    0x05 => tstr += "int64_t",
+                    0x06 => tstr += "int128_t",
+                    0x07 => tstr += "int",
+                    0x08 => tstr += "bool",
+                    0x09 => match tflag.flag {
+                        0x00 => tstr += "float",
+                        0x10 => tstr += "double",
+                        0x20 => tstr += "long double",
+                        0x30 => tstr += "special float",
+                        _ => tstr += "unknown float",
+                    },
+                    _ => {}
+                }
+            }
+            tstr
+        } else {
+            let mut tstr = String::new();
+
+            let base = self.metadata.unwrap().get_base_type_flag();
+            let tflag = self.metadata.unwrap().get_type_flag();
+
+            if base.is_typeid_last() {
+                match base.flag {
+                    0x00 => tstr += "unknown",
+                    0x01 => tstr += "void",
+                    0x02 => tstr += "int8_t",
+                    0x03 => tstr += "int16_t",
+                    0x04 => tstr += "int32_t",
+                    0x05 => tstr += "int64_t",
+                    0x06 => tstr += "int128_t",
+                    0x07 => tstr += "int",
+                    0x08 => tstr += "bool",
+                    0x09 => match tflag.flag {
+                        0x00 => tstr += "float",
+                        0x10 => tstr += "double",
+                        0x20 => tstr += "long double",
+                        0x30 => tstr += "special float",
+                        _ => tstr += "unknown float",
+                    },
+                    _ => {}
+                }
+            } else {
+                match self.typ.as_ref().unwrap() {
+                    Types::Unset(_) => {
+                        println!("TYPERESOLUTION:UNSET");
+                    }
+                    Types::Pointer(m, p) => {
+                        tstr += format!(
+                            "{}*",
+                            self.convert_to_til_type(p.typ.as_ref(), m).get_type_name()
+                        )
+                        .as_str();
+                    }
+                    Types::Function(_, _) => {
+                        println!("TYPERESOLUTION:Function");
+                    }
+                    Types::Array(_, _) => {
+                        println!("TYPERESOLUTION:ARRAY");
+                    }
+                    Types::Typedef(_, p) => {
+                        tstr += p.name.as_ref().unwrap().as_str();
+                        println!("TYPERESOLUTION:TYPEDEF");
+                    }
+                    Types::Struct(m, s) => {
+                        tstr += &self.tinfo.name;
+                    }
+                    Types::Union(_, _) => {
+                        println!("TYPERESOLUTION:union");
+                    }
+                    Types::Enum(_, _) => {
+                        println!("TYPERESOLUTION:enum");
+                    }
+                    Types::Bitfield(_, _) => {
+                        println!("TYPERESOLUTION:bitfld");
+                    }
+                    Types::Unknown(_, _) => {
+                        println!("TYPERESOLUTION:unk");
+                    }
+                }
+            }
+
+            tstr
+        }
+    }
+}
+
+impl TILSection {
+    pub fn get_types(&self) -> Option<Vec<TILType>> {
+        match &self.types {
+            TILBucketType::Default(def) => match def {
+                None => None,
+                Some(sm) => Some(
+                    sm.type_info
+                        .iter()
+                        .map(|x| TILType {
+                            sec: self,
+                            tinfo: x.clone(),
+                            typ: match &x.info {
+                                None => None,
+                                Some(xy) => Some(xy.types.clone()),
+                            },
+                            metadata: match &x.info {
+                                None => None,
+                                Some(xy) => match xy.types {
+                                    Types::Pointer(mdata, _)
+                                    | Types::Function(mdata, _)
+                                    | Types::Array(mdata, _)
+                                    | Types::Typedef(mdata, _)
+                                    | Types::Struct(mdata, _)
+                                    | Types::Union(mdata, _)
+                                    | Types::Enum(mdata, _)
+                                    | Types::Bitfield(mdata, _)
+                                    | Types::Unknown(mdata, _) => Some(mdata),
+                                    _ => None,
+                                },
+                            },
+                        })
+                        .collect::<Vec<TILType>>(),
+                ),
+            },
+            _ => None,
+        }
+    }
+
+    pub fn get_type(&self, name: String) -> Option<TILType> {
+        self.get_types()
+            .unwrap()
+            .into_iter()
+            .find(|x| x.tinfo.name == name)
+    }
+}
+
+impl Types {
+    pub fn get_metadata(&self) -> Option<&TypeMetadata> {
+        match self {
+            Types::Pointer(m, _) => Some(m),
+            Types::Function(m, _) => Some(m),
+            Types::Array(m, _) => Some(m),
+            Types::Typedef(m, _) => Some(m),
+            Types::Struct(m, _) => Some(m),
+            Types::Union(m, _) => Some(m),
+            Types::Enum(m, _) => Some(m),
+            Types::Bitfield(m, _) => Some(m),
+            Types::Unknown(m, _) => Some(m),
+            _ => None,
+        }
+    }
+
+    pub fn get_tinfo(&self, sec: &TILSection) -> Option<TILTypeInfo> {
+        match &sec.types {
+            TILBucketType::Default(def) => match def {
+                None => None,
+                Some(sm) => sm.type_info.clone().into_iter().find(|x| match &x.info {
+                    None => false,
+                    Some(sinfo) => sinfo.types == *self,
+                }),
+            },
+            _ => None,
+        }
+    }
+}
+
 impl TILTypeInfo {
     pub fn get_type_name(&self) -> String {
         let ty = &self.info.as_ref().unwrap().types;
-        if matches!(ty, Types::Unset) {
+        if matches!(ty, Types::Unset(_)) {
             String::from("")
         } else {
             let mut tstr = String::new();
@@ -855,18 +1124,12 @@ impl TILTypeInfo {
                 }
             } else {
                 match ty {
-                    Types::Unset => {}
+                    Types::Unset(_) => {}
                     Types::Pointer(mdata, ptr) => {
-                        // let ptd = ptr.typ.as_ref();
-                        // tstr += format!(
-                        //     "{}",
-                        //     TILTypeInfo {
-                        //         info: Some(TestTypes { types: ptd.clone() }),
-                        //         ..Default::default()
-                        //     }
-                        //     .get_type_name()
-                        // )
-                        // .as_str();
+                        let ptd = ptr.typ.as_ref();
+                        let mut tinfo = self.clone();
+                        tinfo.info = Some(TestTypes { types: ptd.clone() });
+                        tstr += format!("{}", tinfo.get_type_name()).as_str();
                     }
                     Types::Function(_, _) => {}
                     Types::Array(_, _) => {}

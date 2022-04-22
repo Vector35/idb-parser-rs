@@ -28,18 +28,18 @@ fn main() {
         _ => {}
     }
 
-    let str = match &idb.til.as_ref().unwrap().types {
-        TILBucketType::Default(Some(bucket)) => Some(
-            bucket
-                .type_info
-                .iter()
-                .find(|x| x.name == "String")
-                .unwrap()
-                .get_type_name(),
-        ),
-        _ => None,
-    };
-    println!("String - Typename: \n{}", str.unwrap());
+    // let str = match &idb.til.as_ref().unwrap().types {
+    //     TILBucketType::Default(Some(bucket)) => Some(
+    //         bucket
+    //             .type_info
+    //             .iter()
+    //             .find(|x| x.name == "String")
+    //             .unwrap()
+    //             .get_type_name(),
+    //     ),
+    //     _ => None,
+    // };
+    // println!("String - Typename: \n{}", str.unwrap());
 
     match &idb.til.as_ref().unwrap().types {
         TILBucketType::Default(Some(bucket)) => {
@@ -75,4 +75,14 @@ fn main() {
         }
         _ => {}
     }
+
+    println!(
+        "OUTSTRING:\n{}",
+        idb.til
+            .as_ref()
+            .unwrap()
+            .get_type("String".to_string())
+            .unwrap()
+            .get_type_str()
+    );
 }
