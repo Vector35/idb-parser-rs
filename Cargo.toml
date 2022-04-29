@@ -1,0 +1,8 @@
+[package]
+name = "idb-parser"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+binrw = "0.8.4"
+miniz_oxide = "0.5.1"
