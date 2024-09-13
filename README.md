@@ -1,3 +1,5 @@
+## :warning: DEPRECATED USE https://github.com/Vector35/idb-rs INSTEAD :warning:
+
 # idb-parser-rs
 IDA Database Parser written in Rust
 
